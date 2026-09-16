@@ -30,7 +30,10 @@ final class ProductTranslations
         foreach (self::allowedLocales() as $locale) {
             $entry = is_array($raw[$locale] ?? null) ? $raw[$locale] : [];
             $designation = sanitize_text_field((string) ($entry['designation'] ?? ''));
-            $description = sanitize_textarea_field((string) ($entry['description'] ?? ''));
+            // wp_kses_post (not sanitize_textarea_field): the description is
+            // authored through a WYSIWYG editor, so its HTML must survive —
+            // only markup outside the post-safe allowlist is stripped.
+            $description = wp_kses_post((string) ($entry['description'] ?? ''));
 
             if ($designation === '' && $description === '') {
                 continue;

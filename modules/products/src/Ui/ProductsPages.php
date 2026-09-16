@@ -33,23 +33,71 @@ final class ProductsPages
      *
      * @var array<string,string>
      */
-    private const ERP_FIELDS = [
-        'nativeType' => 'Type',
-        'category' => 'Catégorie',
-        'description' => 'Description (Axonaut)',
-        'unit' => 'Unité',
-        'price' => 'Prix HT',
-        'priceWithTax' => 'Prix TTC',
-        'taxRate' => 'Taux de TVA (%)',
-        'ecoParticipation' => 'Éco-participation',
-        'taxDeee' => 'Taxe DEEE',
-        'stock' => 'Stock',
-        'stockThreshold' => 'Seuil de stock',
-        'weightedAverageCost' => 'Coût moyen pondéré',
-        'jobCosting' => 'Coût de revient',
-        'location' => 'Emplacement',
-        'supplierReference' => 'Code produit fournisseur',
-        'internalId' => 'Identifiant RC (internal_id)',
+    /**
+     * Grouped for display (ProductsPages::renderErpCard); `description` is
+     * deliberately absent — it's raw HTML from Axonaut and gets its own
+     * full-width block below the grid, rendered through wp_kses() rather
+     * than escaped as text.
+     */
+    private const ERP_FIELD_GROUPS = [
+        'Identité' => [
+            'nativeType' => 'Type',
+            'category' => 'Catégorie',
+            'unit' => 'Unité',
+            'supplierReference' => 'Code produit fournisseur',
+            'internalId' => 'Identifiant RC (internal_id)',
+        ],
+        'Tarification' => [
+            'price' => 'Prix HT',
+            'priceWithTax' => 'Prix TTC',
+            'taxRate' => 'Taux de TVA (%)',
+            'ecoParticipation' => 'Éco-participation',
+            'taxDeee' => 'Taxe DEEE',
+        ],
+        'Stock & logistique' => [
+            'stock' => 'Stock',
+            'stockThreshold' => 'Seuil de stock',
+            'weightedAverageCost' => 'Coût moyen pondéré',
+            'jobCosting' => 'Coût de revient',
+            'location' => 'Emplacement',
+        ],
+    ];
+
+    /**
+     * Axonaut's product description is raw HTML built by its own rich-text
+     * editor — typically `<div style="...">` / `<span id="meta[...]"
+     * style="...">` wrappers around plain lists and paragraphs. wp_kses_post's
+     * default allowlist strips `style` and `id`, which is what turned this
+     * into visibly-escaped tag soup before; this allowlist keeps `style`
+     * (WordPress runs its value through safecss_filter_attr() regardless)
+     * and `id` so Axonaut's own formatting survives, while still refusing
+     * scripts, forms, iframes and event handlers.
+     */
+    private const ERP_DESCRIPTION_ALLOWED_HTML = [
+        'div' => ['id' => true, 'class' => true, 'style' => true],
+        'span' => ['id' => true, 'class' => true, 'style' => true],
+        'p' => ['id' => true, 'class' => true, 'style' => true],
+        'br' => [],
+        'hr' => [],
+        'strong' => ['style' => true],
+        'b' => ['style' => true],
+        'em' => ['style' => true],
+        'i' => ['style' => true],
+        'u' => ['style' => true],
+        'ul' => ['id' => true, 'class' => true, 'style' => true],
+        'ol' => ['id' => true, 'class' => true, 'style' => true],
+        'li' => ['id' => true, 'class' => true, 'style' => true],
+        'a' => ['href' => true, 'target' => true, 'rel' => true, 'style' => true],
+        'table' => ['class' => true, 'style' => true],
+        'thead' => [],
+        'tbody' => [],
+        'tr' => ['style' => true],
+        'td' => ['style' => true, 'colspan' => true, 'rowspan' => true],
+        'th' => ['style' => true, 'colspan' => true, 'rowspan' => true],
+        'h1' => ['style' => true],
+        'h2' => ['style' => true],
+        'h3' => ['style' => true],
+        'h4' => ['style' => true],
     ];
 
     public function __construct(private readonly ProductRepository $repository)
@@ -62,6 +110,39 @@ final class ProductsPages
     {
         $counts = $this->repository->countsByFamily();
         $totalReconciled = $this->repository->countReconciled();
+
+        $filters = [
+            'q' => isset($_GET['q']) ? sanitize_text_field(wp_unslash((string) $_GET['q'])) : '',
+            'family' => isset($_GET['family']) ? sanitize_key((string) $_GET['family']) : '',
+            'status' => isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : '',
+            'orderby' => isset($_GET['orderby']) ? sanitize_key((string) $_GET['orderby']) : 'title',
+            'order' => isset($_GET['order']) && strtolower((string) $_GET['order']) === 'desc' ? 'desc' : 'asc',
+        ];
+        $perPage = 20;
+        $page = isset($_GET['paged']) ? max(1, (int) $_GET['paged']) : 1;
+
+        $result = $this->repository->search($filters, $perPage, $page);
+        $records = $result['records'];
+        $total = $result['total'];
+        $totalPages = (int) max(1, ceil($total / $perPage));
+
+        $provider = function_exists('rc_core') ? rc_core()->erp()->activeSource() : 'axonaut';
+        $erpProducts = [];
+        if ($records !== []) {
+            $externalIds = array_map(static fn (ProductRecord $record): string => $record->erpExternalId, $records);
+            try {
+                $erpProducts = $this->erpProvider()->findMany($externalIds);
+            } catch (\Throwable $exception) {
+                $erpProducts = [];
+            }
+        }
+
+        $columns = [
+            'uid' => __('Référence RC', 'rc-portal'),
+            'title' => __('Désignation', 'rc-portal'),
+            'status' => __('Statut', 'rc-portal'),
+            'date' => __('Créé le', 'rc-portal'),
+        ];
 
         ob_start();
         ?>
@@ -81,52 +162,154 @@ final class ProductsPages
 
             <div class="rc-section-heading">
                 <div>
-                    <span class="rc-eyebrow"><?php esc_html_e('Accès rapide', 'rc-portal'); ?></span>
-                    <h2><?php esc_html_e('Catalogues et typologies', 'rc-portal'); ?></h2>
+                    <span class="rc-eyebrow"><?php esc_html_e('Récapitulatif', 'rc-portal'); ?></span>
+                    <h2><?php esc_html_e('Tous les produits', 'rc-portal'); ?></h2>
                 </div>
+                <a class="rc-button" href="<?php echo esc_url(home_url('/products/catalogue/')); ?>">
+                    <?php esc_html_e('Ouvrir le catalogue Axonaut', 'rc-portal'); ?>
+                </a>
             </div>
 
-            <div class="rc-module-grid">
-                <a class="rc-module-card" href="<?php echo esc_url(home_url('/products/catalogue/')); ?>">
-                    <div class="rc-module-card__top">
-                        <span class="rc-module-card__icon" aria-hidden="true">⌕</span>
-                        <span class="rc-module-card__arrow" aria-hidden="true">↗</span>
-                    </div>
-                    <div class="rc-module-card__body">
-                        <span class="rc-module-card__eyebrow"><?php esc_html_e('Catalogue Axonaut', 'rc-portal'); ?></span>
-                        <strong><?php esc_html_e('Rechercher un produit', 'rc-portal'); ?></strong>
-                        <p><?php esc_html_e('Parcourir le catalogue ERP, ouvrir une fiche dédiée et, le cas échéant, la réconcilier.', 'rc-portal'); ?></p>
-                    </div>
-                </a>
-                <?php foreach (ProductFamilies::all() as $slug => $definition) : ?>
-                    <a class="rc-module-card" href="<?php echo esc_url(home_url('/products/' . $slug . '/')); ?>">
-                        <div class="rc-module-card__top">
-                            <span class="rc-module-card__icon" aria-hidden="true">
-                                <?php echo esc_html(mb_strtoupper(mb_substr($definition['label'], 0, 2))); ?>
-                            </span>
-                            <span class="rc-module-card__arrow" aria-hidden="true">↗</span>
-                        </div>
-                        <div class="rc-module-card__body">
-                            <span class="rc-module-card__eyebrow">
-                                <?php echo $definition['projected']
-                                    ? esc_html__('Catalogue public', 'rc-portal')
-                                    : esc_html__('Interne uniquement', 'rc-portal'); ?>
-                            </span>
-                            <strong><?php echo esc_html($definition['label']); ?></strong>
-                            <p>
-                                <?php echo esc_html(sprintf(
-                                    /* translators: %d: number of fiches */
-                                    _n('%d fiche', '%d fiches', $counts[$slug] ?? 0, 'rc-portal'),
-                                    $counts[$slug] ?? 0
-                                )); ?>
-                            </p>
-                        </div>
-                    </a>
-                <?php endforeach; ?>
-            </div>
+            <form method="get" class="rc-toolbar">
+                <label>
+                    <?php esc_html_e('Rechercher (référence, désignation)', 'rc-portal'); ?>
+                    <input type="search" name="q" value="<?php echo esc_attr($filters['q']); ?>">
+                </label>
+                <label>
+                    <?php esc_html_e('Typologie', 'rc-portal'); ?>
+                    <select name="family">
+                        <option value=""><?php esc_html_e('Toutes', 'rc-portal'); ?></option>
+                        <?php foreach (ProductFamilies::all() as $slug => $definition) : ?>
+                            <option value="<?php echo esc_attr($slug); ?>" <?php selected($filters['family'], $slug); ?>>
+                                <?php echo esc_html($definition['label']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label>
+                    <?php esc_html_e('Statut', 'rc-portal'); ?>
+                    <select name="status">
+                        <option value=""><?php esc_html_e('Tous', 'rc-portal'); ?></option>
+                        <option value="active" <?php selected($filters['status'], 'active'); ?>><?php esc_html_e('Actif', 'rc-portal'); ?></option>
+                        <option value="archived" <?php selected($filters['status'], 'archived'); ?>><?php esc_html_e('Archivé', 'rc-portal'); ?></option>
+                    </select>
+                </label>
+                <input type="hidden" name="orderby" value="<?php echo esc_attr($filters['orderby']); ?>">
+                <input type="hidden" name="order" value="<?php echo esc_attr($filters['order']); ?>">
+                <button type="submit" class="rc-button rc-button--primary"><?php esc_html_e('Filtrer', 'rc-portal'); ?></button>
+            </form>
+
+            <?php if ($records === []) : ?>
+                <div class="rc-empty">
+                    <strong><?php esc_html_e('Aucun produit ne correspond à ces critères.', 'rc-portal'); ?></strong>
+                </div>
+            <?php else : ?>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                            <tr>
+                                <?php foreach ($columns as $key => $label) : ?>
+                                    <th><?php echo $this->sortLink($key, $label, $filters); ?></th>
+                                <?php endforeach; ?>
+                                <th><?php esc_html_e('Typologie', 'rc-portal'); ?></th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($records as $record) : ?>
+                                <?php $erpProduct = $erpProducts[$record->erpExternalId] ?? null; ?>
+                                <tr>
+                                    <td><?php echo esc_html($record->uid); ?></td>
+                                    <td>
+                                        <?php
+                                        $designation = $record->designation();
+                                        if ($designation === '' && $erpProduct !== null) {
+                                            $designation = $erpProduct->name;
+                                        }
+                                        echo esc_html($designation);
+                                        ?>
+                                    </td>
+                                    <td>
+                                        <span class="rc-badge <?php echo $record->isActive() ? 'rc-badge--success' : 'rc-badge--muted'; ?>">
+                                            <?php echo esc_html($record->isActive() ? __('Actif', 'rc-portal') : __('Archivé', 'rc-portal')); ?>
+                                        </span>
+                                    </td>
+                                    <td></td>
+                                    <td>
+                                        <?php if ($record->isClassified()) : ?>
+                                            <span class="rc-badge rc-badge--success"><?php echo esc_html(ProductFamilies::label($record->family)); ?></span>
+                                        <?php else : ?>
+                                            <span class="rc-badge rc-badge--accent"><?php esc_html_e('À classifier', 'rc-portal'); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php if ($record->isClassified()) : ?>
+                                            <a href="<?php echo esc_url(home_url('/products/' . $record->family . '/' . rawurlencode($record->uid) . '/')); ?>">
+                                                <?php esc_html_e('Ouvrir', 'rc-portal'); ?>
+                                            </a>
+                                        <?php else : ?>
+                                            <a href="<?php echo esc_url(home_url('/products/catalogue/' . rawurlencode($record->erpExternalId) . '/')); ?>">
+                                                <?php esc_html_e('Classifier', 'rc-portal'); ?>
+                                            </a>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <?php echo $this->paginationLinks($page, $totalPages, $filters); ?>
+            <?php endif; ?>
         </div>
         <?php
         return (string) ob_get_clean();
+    }
+
+    /** @param array<string,string> $filters */
+    private function sortLink(string $column, string $label, array $filters): string
+    {
+        $isActive = $filters['orderby'] === $column;
+        $nextOrder = $isActive && $filters['order'] === 'asc' ? 'desc' : 'asc';
+        $url = $this->dashboardUrl(array_merge($filters, ['orderby' => $column, 'order' => $nextOrder, 'paged' => 1]));
+        $arrow = $isActive ? ($filters['order'] === 'asc' ? ' ↑' : ' ↓') : '';
+
+        return '<a href="' . esc_url($url) . '">' . esc_html($label) . $arrow . '</a>';
+    }
+
+    /** @param array<string,string|int> $filters */
+    private function paginationLinks(int $page, int $totalPages, array $filters): string
+    {
+        if ($totalPages <= 1) {
+            return '';
+        }
+
+        ob_start();
+        ?>
+        <nav class="rc-pagination" aria-label="<?php esc_attr_e('Pagination', 'rc-portal'); ?>">
+            <?php if ($page > 1) : ?>
+                <a class="rc-button" href="<?php echo esc_url($this->dashboardUrl(array_merge($filters, ['paged' => $page - 1]))); ?>">&larr; <?php esc_html_e('Précédent', 'rc-portal'); ?></a>
+            <?php endif; ?>
+            <span class="rc-pagination__status">
+                <?php echo esc_html(sprintf(
+                    /* translators: 1: current page, 2: total pages */
+                    __('Page %1$d sur %2$d', 'rc-portal'),
+                    $page,
+                    $totalPages
+                )); ?>
+            </span>
+            <?php if ($page < $totalPages) : ?>
+                <a class="rc-button" href="<?php echo esc_url($this->dashboardUrl(array_merge($filters, ['paged' => $page + 1]))); ?>"><?php esc_html_e('Suivant', 'rc-portal'); ?> &rarr;</a>
+            <?php endif; ?>
+        </nav>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    /** @param array<string,string|int> $overrides */
+    private function dashboardUrl(array $overrides): string
+    {
+        return add_query_arg($overrides, home_url('/products/'));
     }
 
     // -- Catalogue (raw ERP browse + reconciliation) --------------------
@@ -424,7 +607,6 @@ final class ProductsPages
 
     private function renderFamilyList(string $family): string
     {
-        $definition = ProductFamilies::all()[$family];
         $records = $this->repository->list($family, 200);
 
         $provider = function_exists('rc_core') ? rc_core()->erp()->activeSource() : 'axonaut';
@@ -441,11 +623,14 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-products-family-list">
-            <div class="rc-page-header">
-                <div>
-                    <span class="rc-eyebrow"><?php esc_html_e('Typologie', 'rc-portal'); ?></span>
-                    <h1><?php echo esc_html($definition['label']); ?></h1>
-                </div>
+            <div class="rc-list-toolbar-actions">
+                <span class="rc-muted">
+                    <?php echo esc_html(sprintf(
+                        /* translators: %d: number of fiches */
+                        _n('%d fiche', '%d fiches', count($records), 'rc-portal'),
+                        count($records)
+                    )); ?>
+                </span>
                 <a class="rc-button" href="<?php echo esc_url(home_url('/products/catalogue/')); ?>">
                     <?php esc_html_e('Réconcilier depuis le catalogue', 'rc-portal'); ?>
                 </a>
@@ -524,10 +709,26 @@ final class ProductsPages
                     $this->repository->saveCommon($record->postId, $manufacturerUid !== '' ? $manufacturerUid : null, $status);
                     $this->repository->saveI18n($record->postId, $this->i18nInputFromRequest());
                     $this->repository->saveSpecs($record->postId, $this->specsInputFromRequest());
-                    $this->repository->saveFiche($record->postId, $this->familyFieldsInputFromRequest($family));
 
-                    if ($newFamily !== $family && ProductFamilies::isValid($newFamily)) {
+                    $familyChanged = $newFamily !== $family && ProductFamilies::isValid($newFamily);
+                    if ($familyChanged) {
+                        // Reassign first: saveFiche() below normalizes against
+                        // whatever family the record carries right now, so the
+                        // typology must already be the new one before it runs
+                        // — otherwise the fields the dynamic panel just showed
+                        // (for the new typology) would be normalized against
+                        // the old schema and silently dropped.
                         $this->repository->setFamily($record->postId, $newFamily);
+                    }
+
+                    // Interpret the submitted fiche fields against whichever
+                    // typology block the form actually showed (the new one,
+                    // when it was just switched via the dynamic panel), so a
+                    // reclassification + fiche edit submitted together lands
+                    // correctly in one go.
+                    $this->repository->saveFiche($record->postId, $this->familyFieldsInputFromRequest($familyChanged ? $newFamily : $family));
+
+                    if ($familyChanged) {
                         wp_safe_redirect(home_url('/products/' . $newFamily . '/' . rawurlencode($record->uid) . '/'));
                         exit;
                     }
@@ -575,7 +776,7 @@ final class ProductsPages
                     <div class="rc-field-grid">
                         <div class="rc-field">
                             <label><?php esc_html_e('Typologie', 'rc-portal'); ?></label>
-                            <select name="family" <?php disabled(! $canEdit); ?>>
+                            <select name="family" data-rc-family-toggle <?php disabled(! $canEdit); ?>>
                                 <?php foreach (ProductFamilies::all() as $slug => $definition) : ?>
                                     <option value="<?php echo esc_attr($slug); ?>" <?php selected($family, $slug); ?>>
                                         <?php echo esc_html($definition['label']); ?>
@@ -608,7 +809,7 @@ final class ProductsPages
                 <?php echo $this->renderSpecsFields($record->specs, $canEdit); ?>
 
                 <div class="rc-card">
-                    <div class="rc-card__header"><h3><?php echo esc_html(ProductFamilies::label($family)); ?></h3></div>
+                    <div class="rc-card__header"><h3><?php esc_html_e('Champs spécifiques à la typologie', 'rc-portal'); ?></h3></div>
                     <?php echo $this->renderFamilyFields($family, $record->fiche, $canEdit); ?>
                 </div>
 
@@ -634,34 +835,50 @@ final class ProductsPages
         <div class="rc-card">
             <div class="rc-card__header">
                 <h3><?php esc_html_e('Données Axonaut (lecture seule)', 'rc-portal'); ?></h3>
-                <span class="rc-badge"><?php echo esc_html($erpProduct->productCode); ?></span>
-            </div>
-            <div class="rc-field-grid">
-                <?php foreach (self::ERP_FIELDS as $property => $label) : ?>
-                    <?php $value = $erpProduct->{$property}; ?>
-                    <?php if ($value === null || $value === '') {
-                        continue;
-                    } ?>
-                    <div class="rc-field">
-                        <span><?php echo esc_html($label); ?></span>
-                        <strong><?php echo esc_html(is_float($value) ? number_format_i18n($value, 2) : (string) $value); ?></strong>
-                    </div>
-                <?php endforeach; ?>
-                <?php if ($erpProduct->disabled) : ?>
-                    <div class="rc-field">
-                        <span><?php esc_html_e('Statut Axonaut', 'rc-portal'); ?></span>
+                <div class="rc-card__header-actions">
+                    <span class="rc-badge"><?php echo esc_html($erpProduct->productCode); ?></span>
+                    <?php if ($erpProduct->disabled) : ?>
                         <span class="rc-badge rc-badge--muted"><?php esc_html_e('Désactivé', 'rc-portal'); ?></span>
-                    </div>
-                <?php endif; ?>
-                <?php if ($erpProduct->imageUrl !== '') : ?>
-                    <div class="rc-field">
-                        <span><?php esc_html_e('Image', 'rc-portal'); ?></span>
-                        <a href="<?php echo esc_url($erpProduct->imageUrl); ?>" target="_blank" rel="noopener">
+                    <?php endif; ?>
+                    <?php if ($erpProduct->imageUrl !== '') : ?>
+                        <a class="rc-badge rc-badge--accent" href="<?php echo esc_url($erpProduct->imageUrl); ?>" target="_blank" rel="noopener">
                             <?php esc_html_e('Voir l’image', 'rc-portal'); ?>
                         </a>
-                    </div>
-                <?php endif; ?>
+                    <?php endif; ?>
+                </div>
             </div>
+            <?php foreach (self::ERP_FIELD_GROUPS as $groupLabel => $fields) : ?>
+                <?php
+                $visibleFields = array_filter(
+                    $fields,
+                    static fn (string $property) => $erpProduct->{$property} !== null && $erpProduct->{$property} !== '',
+                    ARRAY_FILTER_USE_KEY
+                );
+                if ($visibleFields === []) {
+                    continue;
+                }
+                ?>
+                <div class="rc-erp-group">
+                    <span class="rc-eyebrow"><?php echo esc_html($groupLabel); ?></span>
+                    <div class="rc-field-grid">
+                        <?php foreach ($visibleFields as $property => $label) : ?>
+                            <?php $value = $erpProduct->{$property}; ?>
+                            <div class="rc-field">
+                                <span><?php echo esc_html($label); ?></span>
+                                <strong><?php echo esc_html(is_float($value) ? number_format_i18n($value, 2) : (string) $value); ?></strong>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+            <?php if ($erpProduct->description !== '') : ?>
+                <div class="rc-erp-description">
+                    <span><?php esc_html_e('Description (Axonaut)', 'rc-portal'); ?></span>
+                    <div class="rc-erp-description__body">
+                        <?php echo wp_kses($erpProduct->description, self::ERP_DESCRIPTION_ALLOWED_HTML); ?>
+                    </div>
+                </div>
+            <?php endif; ?>
         </div>
         <?php
         return (string) ob_get_clean();
@@ -669,30 +886,67 @@ final class ProductsPages
 
     private function renderI18nFields(array $i18n, bool $canEdit): string
     {
+        $locales = ProductTranslations::allowedLocales();
+
+        if ($canEdit && function_exists('wp_enqueue_editor')) {
+            wp_enqueue_editor();
+        }
+
         ob_start();
         ?>
         <div class="rc-card">
             <div class="rc-card__header"><h3><?php esc_html_e('Désignation & description (projection)', 'rc-portal'); ?></h3></div>
-            <?php foreach (ProductTranslations::allowedLocales() as $locale) : ?>
-                <?php $entry = $i18n[$locale] ?? ['designation' => '', 'description' => '']; ?>
-                <div class="rc-field-grid">
-                    <div class="rc-field">
-                        <label>
+            <div class="rc-tabs" data-rc-tabs>
+                <div class="rc-tabs__nav" role="tablist">
+                    <?php foreach ($locales as $index => $locale) : ?>
+                        <button type="button" class="rc-tab" data-rc-tab="<?php echo esc_attr($locale); ?>"
+                                role="tab" aria-selected="<?php echo $index === 0 ? 'true' : 'false'; ?>">
                             <?php echo esc_html(strtoupper($locale)); ?>
-                            <?php echo $locale === 'fr' ? ' — ' . esc_html__('natif', 'rc-portal') : ''; ?>
-                            — <?php esc_html_e('Désignation', 'rc-portal'); ?>
-                        </label>
-                        <input type="text" name="i18n_<?php echo esc_attr($locale); ?>_designation"
-                               value="<?php echo esc_attr($entry['designation']); ?>" <?php disabled(! $canEdit); ?>>
-                    </div>
-                    <div class="rc-field">
-                        <label><?php echo esc_html(strtoupper($locale)); ?> — <?php esc_html_e('Description', 'rc-portal'); ?></label>
-                        <textarea name="i18n_<?php echo esc_attr($locale); ?>_description" <?php disabled(! $canEdit); ?>><?php
-                            echo esc_textarea($entry['description']);
-                        ?></textarea>
-                    </div>
+                            <?php echo $locale === 'fr' ? ' (' . esc_html__('natif', 'rc-portal') . ')' : ''; ?>
+                        </button>
+                    <?php endforeach; ?>
                 </div>
-            <?php endforeach; ?>
+                <?php foreach ($locales as $index => $locale) : ?>
+                    <?php
+                    $entry = $i18n[$locale] ?? ['designation' => '', 'description' => ''];
+                    $editorId = 'rc_i18n_desc_' . $locale;
+                    $fieldName = 'i18n_' . $locale . '_description';
+                    ?>
+                    <div class="rc-tabpanel" data-rc-tabpanel="<?php echo esc_attr($locale); ?>" role="tabpanel" <?php echo $index === 0 ? '' : 'hidden'; ?>>
+                        <div class="rc-field">
+                            <label>
+                                <?php echo esc_html(strtoupper($locale)); ?> —
+                                <?php esc_html_e('Désignation', 'rc-portal'); ?>
+                            </label>
+                            <input type="text" name="i18n_<?php echo esc_attr($locale); ?>_designation"
+                                   value="<?php echo esc_attr($entry['designation']); ?>" <?php disabled(! $canEdit); ?>>
+                        </div>
+                        <div class="rc-field">
+                            <label><?php echo esc_html(strtoupper($locale)); ?> — <?php esc_html_e('Description', 'rc-portal'); ?></label>
+                            <?php if ($canEdit && function_exists('wp_editor') && $index === 0) : ?>
+                                <?php
+                                wp_editor($entry['description'], $editorId, [
+                                    'textarea_name' => $fieldName,
+                                    'textarea_rows' => 8,
+                                    'media_buttons' => false,
+                                    'teeny' => true,
+                                    'quicktags' => true,
+                                    'tinymce' => ['wpautop' => true, 'toolbar1' => 'bold,italic,bullist,numlist,link,unlink,undo,redo'],
+                                ]);
+                                ?>
+                            <?php elseif ($canEdit) : ?>
+                                <textarea id="<?php echo esc_attr($editorId); ?>" class="rc-wysiwyg-lazy" name="<?php echo esc_attr($fieldName); ?>" rows="8"><?php
+                                    echo esc_textarea($entry['description']);
+                                ?></textarea>
+                            <?php else : ?>
+                                <textarea name="<?php echo esc_attr($fieldName); ?>" rows="8" disabled><?php
+                                    echo esc_textarea($entry['description']);
+                                ?></textarea>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         </div>
         <?php
         return (string) ob_get_clean();
@@ -736,38 +990,43 @@ final class ProductsPages
         return (string) ob_get_clean();
     }
 
+    /**
+     * Renders every family-variant field block at once, each tagged with
+     * the families it applies to via `data-rc-family-fields` (a CSV of
+     * slugs). `portal.js` toggles their `hidden` attribute when the
+     * Typologie select changes, so switching typology "permutes" the
+     * visible fields without a page reload; only the block matching the
+     * fiche's *current* family starts visible, so a page load always
+     * matches what will actually be saved unless the select is touched.
+     */
     private function renderFamilyFields(string $family, array $fiche, bool $canEdit): string
     {
+        $assetFamilies = ['robot', 'cellule'];
+        $openFamilies = ['piece', 'maintenance', 'logistique', 'deplacement', 'consommable'];
+
         ob_start();
-        switch ($family) {
-            case 'robot':
-            case 'cellule':
-                ?>
-                <div class="rc-field-grid">
-                    <div class="rc-field">
-                        <label><?php esc_html_e('Asset lié (Maintenance)', 'rc-portal'); ?></label>
-                        <input type="text" name="asset_uid"
-                               value="<?php echo esc_attr((string) ($fiche['assetUid'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                        <span class="rc-field--help">
-                            <?php esc_html_e('Simple référence vers la fiche Asset que Maintenance possédera (propriétaire, site, configuration, historique). Laisser vide tant que Maintenance n’est pas livré.', 'rc-portal'); ?>
-                        </span>
-                    </div>
-                </div>
-                <?php
-                break;
-
-            default:
-                ?>
+        ?>
+        <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $assetFamilies)); ?>" <?php echo in_array($family, $assetFamilies, true) ? '' : 'hidden'; ?>>
+            <div class="rc-field-grid">
                 <div class="rc-field">
-                    <label><?php esc_html_e('Enrichissement (typologie non encore cadrée)', 'rc-portal'); ?></label>
-                    <textarea name="fiche_json" rows="6" <?php disabled(! $canEdit); ?>><?php
-                        echo esc_textarea((string) wp_json_encode($fiche, JSON_PRETTY_PRINT));
-                    ?></textarea>
+                    <label><?php esc_html_e('Asset lié (Maintenance)', 'rc-portal'); ?></label>
+                    <input type="text" name="asset_uid"
+                           value="<?php echo esc_attr((string) ($fiche['assetUid'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    <span class="rc-field--help">
+                        <?php esc_html_e('Simple référence vers la fiche Asset que Maintenance possédera (propriétaire, site, configuration, historique). Laisser vide tant que Maintenance n’est pas livré.', 'rc-portal'); ?>
+                    </span>
                 </div>
-                <?php
-                break;
-        }
-
+            </div>
+        </div>
+        <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $openFamilies)); ?>" <?php echo in_array($family, $assetFamilies, true) ? 'hidden' : ''; ?>>
+            <div class="rc-field">
+                <label><?php esc_html_e('Enrichissement (typologie non encore cadrée)', 'rc-portal'); ?></label>
+                <textarea name="fiche_json" rows="6" <?php disabled(! $canEdit); ?>><?php
+                    echo esc_textarea(in_array($family, $assetFamilies, true) ? '{}' : (string) wp_json_encode($fiche, JSON_PRETTY_PRINT));
+                ?></textarea>
+            </div>
+        </div>
+        <?php
         return (string) ob_get_clean();
     }
 

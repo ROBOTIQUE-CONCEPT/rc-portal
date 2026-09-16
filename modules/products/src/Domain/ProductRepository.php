@@ -142,6 +142,90 @@ final class ProductRepository
         return $records;
     }
 
+    /**
+     * Cross-family listing for the dashboard table: free-text search
+     * (title, RC reference, ERP reference), typology/status filters,
+     * column sort and pagination — built on a direct query rather than
+     * `WP_Query` so search and sort can reach into postmeta cleanly.
+     *
+     * @param array{q?:string, family?:string, status?:string, orderby?:string, order?:string} $filters
+     * @return array{records: list<ProductRecord>, total: int}
+     */
+    public function search(array $filters, int $perPage, int $page): array
+    {
+        global $wpdb;
+
+        $q = trim((string) ($filters['q'] ?? ''));
+        $family = sanitize_key((string) ($filters['family'] ?? ''));
+        $status = sanitize_key((string) ($filters['status'] ?? ''));
+        $orderby = (string) ($filters['orderby'] ?? 'title');
+        $order = strtoupper((string) ($filters['order'] ?? 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
+
+        $perPage = max(1, min(200, $perPage));
+        $page = max(1, $page);
+        $offset = ($page - 1) * $perPage;
+
+        $joins = [
+            "LEFT JOIN {$wpdb->postmeta} uidmeta ON uidmeta.post_id = p.ID AND uidmeta.meta_key = '" . self::META_UID . "'",
+            "LEFT JOIN {$wpdb->postmeta} erpmeta ON erpmeta.post_id = p.ID AND erpmeta.meta_key = '" . self::META_ERP_EXTERNAL_ID . "'",
+            "LEFT JOIN {$wpdb->postmeta} statusmeta ON statusmeta.post_id = p.ID AND statusmeta.meta_key = '" . self::META_STATUS . "'",
+        ];
+        $where = [
+            $wpdb->prepare('p.post_type = %s', ProductTypeRegistry::POST_TYPE),
+            "p.post_status != 'trash'",
+        ];
+
+        if ($q !== '') {
+            $like = '%' . $wpdb->esc_like($q) . '%';
+            $where[] = $wpdb->prepare(
+                '(p.post_title LIKE %s OR uidmeta.meta_value LIKE %s OR erpmeta.meta_value LIKE %s)',
+                $like,
+                $like,
+                $like
+            );
+        }
+
+        if ($family !== '' && ProductFamilies::isValid($family)) {
+            $joins[] = "INNER JOIN {$wpdb->term_relationships} tr ON tr.object_id = p.ID";
+            $joins[] = "INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id AND tt.taxonomy = '" . ProductTypeRegistry::TAXONOMY . "'";
+            $joins[] = "INNER JOIN {$wpdb->terms} t ON t.term_id = tt.term_id";
+            $where[] = $wpdb->prepare('t.slug = %s', $family);
+        }
+
+        if (in_array($status, ['active', 'archived'], true)) {
+            $where[] = $wpdb->prepare('statusmeta.meta_value = %s', $status);
+        }
+
+        $orderColumn = match ($orderby) {
+            'uid' => 'uidmeta.meta_value',
+            'status' => 'statusmeta.meta_value',
+            'date' => 'p.post_date',
+            default => 'p.post_title',
+        };
+
+        $joinSql = implode(' ', $joins);
+        $whereSql = implode(' AND ', $where);
+
+        $total = (int) $wpdb->get_var("SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p {$joinSql} WHERE {$whereSql}");
+
+        $sql = $wpdb->prepare(
+            "SELECT DISTINCT p.ID FROM {$wpdb->posts} p {$joinSql} WHERE {$whereSql} ORDER BY {$orderColumn} {$order} LIMIT %d OFFSET %d",
+            $perPage,
+            $offset
+        );
+        $ids = array_map('intval', (array) $wpdb->get_col($sql));
+
+        $records = [];
+        foreach ($ids as $id) {
+            $record = $this->find($id);
+            if ($record !== null) {
+                $records[] = $record;
+            }
+        }
+
+        return ['records' => $records, 'total' => $total];
+    }
+
     /** @return array<string,int> */
     public function countsByFamily(): array
     {
