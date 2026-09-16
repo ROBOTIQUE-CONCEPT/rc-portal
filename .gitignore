@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+node_modules/
+vendor/
+.env
+.env.*
+*.zip
+*.tar.gz
