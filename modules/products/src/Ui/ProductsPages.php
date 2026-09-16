@@ -34,32 +34,28 @@ final class ProductsPages
      * @var array<string,string>
      */
     /**
-     * Grouped for display (ProductsPages::renderErpCard); `description` is
-     * deliberately absent — it's raw HTML from Axonaut and gets its own
-     * full-width block below the grid, rendered through wp_kses() rather
+     * Three fixed columns for `renderErpCard`'s 3-column layout (stacked on
+     * mobile — see `.rc-erp-columns` in portal.css); `description` is
+     * deliberately absent from all three — it's raw HTML from Axonaut and
+     * gets its own full-width row below, rendered through wp_kses() rather
      * than escaped as text.
      */
     private const ERP_FIELD_GROUPS = [
         'Identité' => [
             'nativeType' => 'Type',
             'category' => 'Catégorie',
-            'unit' => 'Unité',
             'supplierReference' => 'Code produit fournisseur',
-            'internalId' => 'Identifiant RC (internal_id)',
+            'internalId' => 'Identifiant RC',
         ],
         'Tarification' => [
             'price' => 'Prix HT',
             'priceWithTax' => 'Prix TTC',
             'taxRate' => 'Taux de TVA (%)',
-            'ecoParticipation' => 'Éco-participation',
-            'taxDeee' => 'Taxe DEEE',
         ],
-        'Stock & logistique' => [
+        'Stock' => [
             'stock' => 'Stock',
-            'stockThreshold' => 'Seuil de stock',
-            'weightedAverageCost' => 'Coût moyen pondéré',
+            'weightedAverageCost' => 'Coût moyen',
             'jobCosting' => 'Coût de revient',
-            'location' => 'Emplacement',
         ],
     ];
 
@@ -108,9 +104,6 @@ final class ProductsPages
 
     public function renderDashboard(object $context): string
     {
-        $counts = $this->repository->countsByFamily();
-        $totalReconciled = $this->repository->countReconciled();
-
         $filters = [
             'q' => isset($_GET['q']) ? sanitize_text_field(wp_unslash((string) $_GET['q'])) : '',
             'family' => isset($_GET['family']) ? sanitize_key((string) $_GET['family']) : '',
@@ -147,24 +140,7 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-products-dashboard">
-            <div class="rc-card-grid">
-                <div class="rc-card rc-card--stat">
-                    <span><?php esc_html_e('Fiches réconciliées', 'rc-portal'); ?></span>
-                    <strong><?php echo esc_html((string) $totalReconciled); ?></strong>
-                </div>
-                <?php foreach (ProductFamilies::all() as $slug => $definition) : ?>
-                    <div class="rc-card rc-card--stat">
-                        <span><?php echo esc_html($definition['label']); ?></span>
-                        <strong><?php echo esc_html((string) ($counts[$slug] ?? 0)); ?></strong>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-
-            <div class="rc-section-heading">
-                <div>
-                    <span class="rc-eyebrow"><?php esc_html_e('Récapitulatif', 'rc-portal'); ?></span>
-                    <h2><?php esc_html_e('Tous les produits', 'rc-portal'); ?></h2>
-                </div>
+            <div class="rc-dashboard-actions">
                 <a class="rc-button" href="<?php echo esc_url(home_url('/products/catalogue/')); ?>">
                     <?php esc_html_e('Ouvrir le catalogue Axonaut', 'rc-portal'); ?>
                 </a>
@@ -469,7 +445,9 @@ final class ProductsPages
                 try {
                     $family = sanitize_key($this->postValue('family'));
                     $manufacturerUid = $this->postValue('manufacturer_uid');
-                    $status = sanitize_key($this->postValue('status', 'active'));
+                    // Status is not a local editorial field: derived from
+                    // Axonaut's own `disabled` flag — see renderFamilyFiche().
+                    $status = ($erpProduct !== null && $erpProduct->disabled) ? 'archived' : 'active';
 
                     $this->repository->saveCommon($record->postId, $manufacturerUid !== '' ? $manufacturerUid : null, $status);
                     $this->repository->saveI18n($record->postId, $this->i18nInputFromRequest());
@@ -496,7 +474,7 @@ final class ProductsPages
         <div class="rc-products-fiche">
             <div class="rc-page-header">
                 <div>
-                    <span class="rc-eyebrow">Axonaut #<?php echo esc_html($externalId); ?></span>
+                    <span class="rc-eyebrow"><?php echo esc_html(($erpProduct !== null && $erpProduct->productCode !== '') ? $erpProduct->productCode : ('Axonaut #' . $externalId)); ?></span>
                     <h1><?php echo esc_html($erpProduct !== null ? ($erpProduct->name !== '' ? $erpProduct->name : $externalId) : $externalId); ?></h1>
                 </div>
             </div>
@@ -550,7 +528,7 @@ final class ProductsPages
                         <div class="rc-field-grid">
                             <div class="rc-field">
                                 <label><?php esc_html_e('Typologie', 'rc-portal'); ?></label>
-                                <select name="family" <?php disabled(! $canEdit); ?>>
+                                <select name="family" data-rc-family-toggle <?php disabled(! $canEdit); ?>>
                                     <option value=""><?php esc_html_e('Non classé pour l’instant', 'rc-portal'); ?></option>
                                     <?php foreach (ProductFamilies::all() as $slug => $definition) : ?>
                                         <option value="<?php echo esc_attr($slug); ?>"><?php echo esc_html($definition['label']); ?></option>
@@ -568,17 +546,10 @@ final class ProductsPages
                                     <?php endforeach; ?>
                                 </select>
                             </div>
-                            <div class="rc-field">
-                                <label><?php esc_html_e('Statut', 'rc-portal'); ?></label>
-                                <select name="status" <?php disabled(! $canEdit); ?>>
-                                    <option value="active" <?php selected($record->status, 'active'); ?>><?php esc_html_e('Actif', 'rc-portal'); ?></option>
-                                    <option value="archived" <?php selected($record->status, 'archived'); ?>><?php esc_html_e('Archivé', 'rc-portal'); ?></option>
-                                </select>
-                            </div>
                         </div>
 
                         <?php echo $this->renderI18nFields($record->i18n, $canEdit); ?>
-                        <?php echo $this->renderSpecsFields($record->specs, $canEdit); ?>
+                        <?php echo $this->renderSpecsFields((string) $record->family, $record->specs, $record->fiche, $canEdit); ?>
 
                         <?php if ($canEdit) : ?>
                             <button type="submit" class="rc-button rc-button--primary"><?php esc_html_e('Enregistrer', 'rc-portal'); ?></button>
@@ -697,13 +668,25 @@ final class ProductsPages
         $error = null;
         $saved = false;
 
+        $erpProduct = null;
+        $erpError = null;
+        try {
+            $erpProduct = $this->erpProvider()->find($record->erpExternalId);
+        } catch (\Throwable $exception) {
+            $erpError = __('Connexion au catalogue Axonaut indisponible pour le moment.', 'rc-portal');
+        }
+
         if ($canEdit && $this->isPost('save')) {
             if (! wp_verify_nonce($this->postValue('rc_products_nonce'), 'rc_products_save_' . $record->uid)) {
                 $error = __('La demande a expiré, veuillez réessayer.', 'rc-portal');
             } else {
                 try {
                     $manufacturerUid = $this->postValue('manufacturer_uid');
-                    $status = sanitize_key($this->postValue('status', 'active'));
+                    // Status is not a local editorial field: Axonaut is the
+                    // source of truth for whether a product is active, so
+                    // it's derived from the ERP record's own `disabled` flag
+                    // on every save rather than taken from user input.
+                    $status = ($erpProduct !== null && $erpProduct->disabled) ? 'archived' : 'active';
                     $newFamily = sanitize_key($this->postValue('family', $family));
 
                     $this->repository->saveCommon($record->postId, $manufacturerUid !== '' ? $manufacturerUid : null, $status);
@@ -741,23 +724,24 @@ final class ProductsPages
             }
         }
 
-        $erpProduct = null;
-        $erpError = null;
-        try {
-            $erpProduct = $this->erpProvider()->find($record->erpExternalId);
-        } catch (\Throwable $exception) {
-            $erpError = __('Connexion au catalogue Axonaut indisponible pour le moment.', 'rc-portal');
-        }
-
         $manufacturers = function_exists('rc_core') ? rc_core()->manufacturers()->all() : [];
+
+        // The native ERP name and SKU (product_code) are the authoritative
+        // product identity — the local "projection" designation is a
+        // WooCommerce-facing override, not the product's name — so they lead
+        // the title/eyebrow whenever Axonaut is reachable.
+        $title = ($erpProduct !== null && $erpProduct->name !== '')
+            ? $erpProduct->name
+            : ($record->designation() !== '' ? $record->designation() : $record->erpExternalId);
+        $sku = ($erpProduct !== null && $erpProduct->productCode !== '') ? $erpProduct->productCode : $record->erpExternalId;
 
         ob_start();
         ?>
         <div class="rc-products-fiche">
             <div class="rc-page-header">
                 <div>
-                    <span class="rc-eyebrow"><?php echo esc_html($record->uid); ?></span>
-                    <h1><?php echo esc_html($record->designation() !== '' ? $record->designation() : ($erpProduct->name ?? $record->erpExternalId)); ?></h1>
+                    <span class="rc-eyebrow"><?php echo esc_html($sku); ?></span>
+                    <h1><?php echo esc_html($title); ?></h1>
                 </div>
             </div>
 
@@ -795,23 +779,11 @@ final class ProductsPages
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <div class="rc-field">
-                            <label><?php esc_html_e('Statut', 'rc-portal'); ?></label>
-                            <select name="status" <?php disabled(! $canEdit); ?>>
-                                <option value="active" <?php selected($record->status, 'active'); ?>><?php esc_html_e('Actif', 'rc-portal'); ?></option>
-                                <option value="archived" <?php selected($record->status, 'archived'); ?>><?php esc_html_e('Archivé', 'rc-portal'); ?></option>
-                            </select>
-                        </div>
                     </div>
                 </div>
 
                 <?php echo $this->renderI18nFields($record->i18n, $canEdit); ?>
-                <?php echo $this->renderSpecsFields($record->specs, $canEdit); ?>
-
-                <div class="rc-card">
-                    <div class="rc-card__header"><h3><?php esc_html_e('Champs spécifiques à la typologie', 'rc-portal'); ?></h3></div>
-                    <?php echo $this->renderFamilyFields($family, $record->fiche, $canEdit); ?>
-                </div>
+                <?php echo $this->renderSpecsFields($family, $record->specs, $record->fiche, $canEdit); ?>
 
                 <?php if ($canEdit) : ?>
                     <button type="submit" class="rc-button rc-button--primary"><?php esc_html_e('Enregistrer', 'rc-portal'); ?></button>
@@ -839,6 +811,8 @@ final class ProductsPages
                     <span class="rc-badge"><?php echo esc_html($erpProduct->productCode); ?></span>
                     <?php if ($erpProduct->disabled) : ?>
                         <span class="rc-badge rc-badge--muted"><?php esc_html_e('Désactivé', 'rc-portal'); ?></span>
+                    <?php else : ?>
+                        <span class="rc-badge rc-badge--success"><?php esc_html_e('Actif', 'rc-portal'); ?></span>
                     <?php endif; ?>
                     <?php if ($erpProduct->imageUrl !== '') : ?>
                         <a class="rc-badge rc-badge--accent" href="<?php echo esc_url($erpProduct->imageUrl); ?>" target="_blank" rel="noopener">
@@ -847,30 +821,23 @@ final class ProductsPages
                     <?php endif; ?>
                 </div>
             </div>
-            <?php foreach (self::ERP_FIELD_GROUPS as $groupLabel => $fields) : ?>
-                <?php
-                $visibleFields = array_filter(
-                    $fields,
-                    static fn (string $property) => $erpProduct->{$property} !== null && $erpProduct->{$property} !== '',
-                    ARRAY_FILTER_USE_KEY
-                );
-                if ($visibleFields === []) {
-                    continue;
-                }
-                ?>
-                <div class="rc-erp-group">
-                    <span class="rc-eyebrow"><?php echo esc_html($groupLabel); ?></span>
-                    <div class="rc-field-grid">
-                        <?php foreach ($visibleFields as $property => $label) : ?>
+            <div class="rc-erp-columns">
+                <?php foreach (self::ERP_FIELD_GROUPS as $groupLabel => $fields) : ?>
+                    <div class="rc-erp-column">
+                        <span class="rc-eyebrow"><?php echo esc_html($groupLabel); ?></span>
+                        <?php foreach ($fields as $property => $label) : ?>
                             <?php $value = $erpProduct->{$property}; ?>
+                            <?php if ($value === null || $value === '') {
+                                continue;
+                            } ?>
                             <div class="rc-field">
                                 <span><?php echo esc_html($label); ?></span>
                                 <strong><?php echo esc_html(is_float($value) ? number_format_i18n($value, 2) : (string) $value); ?></strong>
                             </div>
                         <?php endforeach; ?>
                     </div>
-                </div>
-            <?php endforeach; ?>
+                <?php endforeach; ?>
+            </div>
             <?php if ($erpProduct->description !== '') : ?>
                 <div class="rc-erp-description">
                     <span><?php esc_html_e('Description (Axonaut)', 'rc-portal'); ?></span>
@@ -895,7 +862,7 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-card">
-            <div class="rc-card__header"><h3><?php esc_html_e('Désignation & description (projection)', 'rc-portal'); ?></h3></div>
+            <div class="rc-card__header"><h3><?php esc_html_e('Projection WooCommerce', 'rc-portal'); ?></h3></div>
             <div class="rc-tabs" data-rc-tabs>
                 <div class="rc-tabs__nav" role="tablist">
                     <?php foreach ($locales as $index => $locale) : ?>
@@ -930,7 +897,9 @@ final class ProductsPages
                                     'textarea_rows' => 8,
                                     'media_buttons' => false,
                                     'teeny' => true,
-                                    'quicktags' => true,
+                                    // No quicktags: the raw-HTML "Texte" tab
+                                    // is hidden, this stays a pure visual editor.
+                                    'quicktags' => false,
                                     'tinymce' => ['wpautop' => true, 'toolbar1' => 'bold,italic,bullist,numlist,link,unlink,undo,redo'],
                                 ]);
                                 ?>
@@ -952,78 +921,80 @@ final class ProductsPages
         return (string) ob_get_clean();
     }
 
-    private function renderSpecsFields(array $specs, bool $canEdit): string
+    /**
+     * "Caractéristiques locales" is a single card whose content is
+     * typology-dependent — it's not a separate concept from the family's
+     * specific fields, just the same card wearing different fields per
+     * typology: an asset pointer for robot/cellule, the dimension/customs
+     * fields for a pièce, and a raw-JSON fallback for the families whose
+     * schema isn't cadré yet. Every variant is rendered at once, tagged with
+     * the families it applies to via `data-rc-family-fields` (a CSV of
+     * slugs); `portal.js` toggles their `hidden` attribute when the
+     * Typologie select changes, so switching typology "permutes" the
+     * visible fields without a page reload. Only the block matching the
+     * fiche's *current* family starts visible.
+     */
+    private function renderSpecsFields(string $family, array $specs, array $fiche, bool $canEdit): string
     {
+        $assetFamilies = ['robot', 'cellule'];
+        $dimensionFamilies = ['piece'];
+        $openFamilies = ['maintenance', 'logistique', 'deplacement', 'consommable'];
+
         ob_start();
         ?>
         <div class="rc-card">
             <div class="rc-card__header"><h3><?php esc_html_e('Caractéristiques locales', 'rc-portal'); ?></h3></div>
-            <div class="rc-field-grid">
-                <div class="rc-field">
-                    <label><?php esc_html_e('Longueur (mm)', 'rc-portal'); ?></label>
-                    <input type="number" step="0.1" min="0" name="longueur_mm"
-                           value="<?php echo esc_attr((string) ($specs['longueurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Largeur (mm)', 'rc-portal'); ?></label>
-                    <input type="number" step="0.1" min="0" name="largeur_mm"
-                           value="<?php echo esc_attr((string) ($specs['largeurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Profondeur (mm)', 'rc-portal'); ?></label>
-                    <input type="number" step="0.1" min="0" name="profondeur_mm"
-                           value="<?php echo esc_attr((string) ($specs['profondeurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Code douanier', 'rc-portal'); ?></label>
-                    <input type="text" name="tariff_code"
-                           value="<?php echo esc_attr((string) ($specs['tariffCode'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Pays d’origine', 'rc-portal'); ?></label>
-                    <input type="text" name="country_of_origin"
-                           value="<?php echo esc_attr((string) ($specs['countryOfOrigin'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+
+            <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $assetFamilies)); ?>" <?php echo in_array($family, $assetFamilies, true) ? '' : 'hidden'; ?>>
+                <div class="rc-field-grid">
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Asset lié (Maintenance)', 'rc-portal'); ?></label>
+                        <input type="text" name="asset_uid"
+                               value="<?php echo esc_attr((string) ($fiche['assetUid'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                        <span class="rc-field--help">
+                            <?php esc_html_e('Simple référence vers la fiche Asset que Maintenance possédera (propriétaire, site, configuration, historique). Laisser vide tant que Maintenance n’est pas livré.', 'rc-portal'); ?>
+                        </span>
+                    </div>
                 </div>
             </div>
-        </div>
-        <?php
-        return (string) ob_get_clean();
-    }
 
-    /**
-     * Renders every family-variant field block at once, each tagged with
-     * the families it applies to via `data-rc-family-fields` (a CSV of
-     * slugs). `portal.js` toggles their `hidden` attribute when the
-     * Typologie select changes, so switching typology "permutes" the
-     * visible fields without a page reload; only the block matching the
-     * fiche's *current* family starts visible, so a page load always
-     * matches what will actually be saved unless the select is touched.
-     */
-    private function renderFamilyFields(string $family, array $fiche, bool $canEdit): string
-    {
-        $assetFamilies = ['robot', 'cellule'];
-        $openFamilies = ['piece', 'maintenance', 'logistique', 'deplacement', 'consommable'];
-
-        ob_start();
-        ?>
-        <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $assetFamilies)); ?>" <?php echo in_array($family, $assetFamilies, true) ? '' : 'hidden'; ?>>
-            <div class="rc-field-grid">
-                <div class="rc-field">
-                    <label><?php esc_html_e('Asset lié (Maintenance)', 'rc-portal'); ?></label>
-                    <input type="text" name="asset_uid"
-                           value="<?php echo esc_attr((string) ($fiche['assetUid'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
-                    <span class="rc-field--help">
-                        <?php esc_html_e('Simple référence vers la fiche Asset que Maintenance possédera (propriétaire, site, configuration, historique). Laisser vide tant que Maintenance n’est pas livré.', 'rc-portal'); ?>
-                    </span>
+            <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $dimensionFamilies)); ?>" <?php echo in_array($family, $dimensionFamilies, true) ? '' : 'hidden'; ?>>
+                <div class="rc-field-grid">
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Longueur (mm)', 'rc-portal'); ?></label>
+                        <input type="number" step="0.1" min="0" name="longueur_mm"
+                               value="<?php echo esc_attr((string) ($specs['longueurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    </div>
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Largeur (mm)', 'rc-portal'); ?></label>
+                        <input type="number" step="0.1" min="0" name="largeur_mm"
+                               value="<?php echo esc_attr((string) ($specs['largeurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    </div>
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Profondeur (mm)', 'rc-portal'); ?></label>
+                        <input type="number" step="0.1" min="0" name="profondeur_mm"
+                               value="<?php echo esc_attr((string) ($specs['profondeurMm'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    </div>
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Code douanier', 'rc-portal'); ?></label>
+                        <input type="text" name="tariff_code"
+                               value="<?php echo esc_attr((string) ($specs['tariffCode'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    </div>
+                    <div class="rc-field">
+                        <label><?php esc_html_e('Pays d’origine', 'rc-portal'); ?></label>
+                        <input type="text" name="country_of_origin"
+                               value="<?php echo esc_attr((string) ($specs['countryOfOrigin'] ?? '')); ?>" <?php disabled(! $canEdit); ?>>
+                    </div>
                 </div>
             </div>
-        </div>
-        <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $openFamilies)); ?>" <?php echo in_array($family, $assetFamilies, true) ? 'hidden' : ''; ?>>
-            <div class="rc-field">
-                <label><?php esc_html_e('Enrichissement (typologie non encore cadrée)', 'rc-portal'); ?></label>
-                <textarea name="fiche_json" rows="6" <?php disabled(! $canEdit); ?>><?php
-                    echo esc_textarea(in_array($family, $assetFamilies, true) ? '{}' : (string) wp_json_encode($fiche, JSON_PRETTY_PRINT));
-                ?></textarea>
+
+            <div class="rc-family-fields" data-rc-family-fields="<?php echo esc_attr(implode(',', $openFamilies)); ?>" <?php echo in_array($family, $openFamilies, true) ? '' : 'hidden'; ?>>
+                <div class="rc-field">
+                    <label><?php esc_html_e('Enrichissement (typologie non encore cadrée)', 'rc-portal'); ?></label>
+                    <textarea name="fiche_json" rows="6" <?php disabled(! $canEdit); ?>><?php
+                        echo esc_textarea(in_array($family, $openFamilies, true) ? (string) wp_json_encode($fiche, JSON_PRETTY_PRINT) : '{}');
+                    ?></textarea>
+                </div>
             </div>
         </div>
         <?php

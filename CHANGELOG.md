@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0-alpha11
+- Dashboard: remove the per-family stat cards and the "Récapitulatif / Tous les produits" heading above the product table — the table and its filters are now the whole page, reached directly under a single right-aligned "Ouvrir le catalogue Axonaut" action.
+- Fiche produit: the title is now the product's actual name and the eyebrow its SKU (`product_code`), both read from Axonaut when reachable (falling back to the local projection/external id otherwise) — previously the title favored the local WooCommerce-projection désignation and the eyebrow showed the internal RC uid.
+- Rename "Désignation & description (projection)" to "Projection WooCommerce" and drop the WYSIWYG editor's Texte/Visuel (quicktags) toggle — it's a pure visual editor now, no raw-HTML tab to expose.
+- Données Axonaut: laid out as three columns (Identité / Tarification / Stock, stacked on mobile) instead of stacked field groups, trimmed to the fields actually wanted per column (drops Unité, Éco-participation, Taxe DEEE, Seuil de stock, Emplacement); the description keeps its own full-width row below. The status badge is now an explicit Actif/Désactivé pair sourced from Axonaut's own `disabled` flag, always shown rather than only on disable.
+- Merge the "Champs spécifiques à la typologie" card into "Caractéristiques locales" — they were describing the same thing under two headings. The typology now picks which fields that one card shows: the asset pointer for robot/cellule, the dimensions/code douanier/pays d'origine fields for pièce, and the raw-JSON fallback for the families whose schema isn't cadré yet (maintenance, logistique, déplacement, consommable) — same live-permute behavior as before, one card instead of two.
+- Statut (actif/archivé) is no longer a locally-editable field on the fiche or the reconciliation "à classifier" form: it's derived from Axonaut's `disabled` flag on every save instead of taken from a dropdown, since Axonaut is the source of truth for whether a product is active.
+- No RC Core version change; RC Portal Theme 0.1.0-alpha9 for the corresponding CSS (`.rc-erp-columns`, `.rc-dashboard-actions`).
+
 ## 0.3.0-alpha10
 - Rework the dashboard's family recap from stat cards into an actual product table (`ProductRepository::search()`): free-text search across title/RC reference/ERP reference, family and status filters, column sort (reference, status, date) and pagination — all via GET params so the URL stays shareable/bookmarkable.
 - Remove the family list page's duplicated title (family name repeated as both the generic page `<h1>` and the module's own header) and the "Typologie" eyebrow sub-label; replaced with a compact toolbar row (fiche count + a link back to the catalogue).
