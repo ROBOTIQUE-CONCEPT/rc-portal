@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0-alpha12
+- New standalone module: **Outils internes** (`tools`), a growing collection of technical utilities with no relation to the ERP or any other module's data — a dashboard (`/tools/`) listing each tool as its own card, starting with one entry.
+- First tool: **Analyseur d'archive KUKA** (`/tools/kuka-archive/`) — upload a KUKA Archive Manager backup (.zip) and get a field-diagnostic report: Archive Manager metadata, per-robot identity/KSS version, cell version, mastering history (flagging an axis mastered under more than one serial number over time — a possible motor/resolver swap), calibration files (flagging non-zero `CalibrationDifference` values), warm-start failures and fatal system errors (both grouped by recurring cause), Windows HMI crash dumps, user program listing, and the message-log Jet/Access databases (`KukaLog.mdb` and its `.bkp`/`.tmp` siblings) detected and listed by name/size/date rather than parsed in full — full parsing needs a component not generally available on shared hosting, a scoped fast-follow rather than a silent omission.
+- No data persistence: the uploaded archive is read from PHP's own upload temp file (never moved into WordPress's uploads directory), analyzed entirely in memory for the duration of the request, and explicitly deleted before the response is sent — nothing about the archive or its contents is written to disk or any datastore.
+- Dedicated `rc_tools_use` capability, gating both module pages through RC Core's existing UI Registry — access is opt-in per role like every other module.
+- No RC Core or RC Portal Theme change: reuses existing generic UI primitives (`.rc-card`, `.rc-table`, `.rc-field-grid`, `.rc-badge`, `.rc-module-grid`) as-is.
+
 ## 0.3.0-alpha11
 - Dashboard: remove the per-family stat cards and the "Récapitulatif / Tous les produits" heading above the product table — the table and its filters are now the whole page, reached directly under a single right-aligned "Ouvrir le catalogue Axonaut" action.
 - Fiche produit: the title is now the product's actual name and the eyebrow its SKU (`product_code`), both read from Axonaut when reachable (falling back to the local projection/external id otherwise) — previously the title favored the local WooCommerce-projection désignation and the eyebrow showed the internal RC uid.
