@@ -27,6 +27,21 @@
  *   so parseEvtLog() below reads it directly with plain DataView/
  *   TextDecoder calls.
  *
+ * Neither format carries human-readable text, only a short module+key pair
+ * per entry. Some archives separately contain a Jet/Access "message
+ * dictionary" (an `Items`+`Messages` schema, typically in its own file,
+ * e.g. `MessAppli.mdb` — distinct from the message-log schema above) that
+ * maps that same module+key pair to real text, per language. Before
+ * processing any card, buildDictionary() below opens every Jet-format card
+ * once looking for that schema and merges what it finds into one flat
+ * "Module#Key" → text lookup, sent along with every card's own payload
+ * (a log entry and the dictionary that translates it are often in two
+ * different files) — see MessageLogProcessor::translateMessage() on the
+ * PHP side for where it's actually applied. It only ever covers messages
+ * an integrator configured for their own application; KUKA's own built-in
+ * system message codes aren't shipped as data anywhere in the archive, so
+ * most entries legitimately have no translation.
+ *
  * Rebuilding this bundle (only needed if this file changes):
  *   cd modules/tools/assets/js-src && npm install && npm run build
  * — produces ../js/message-logs.bundle.js, which is what ToolsPages
@@ -53,8 +68,9 @@ import { Buffer } from "buffer";
         }
 
         var cards = document.querySelectorAll("[data-rc-message-log]");
+        var dictionary = buildDictionary(cards);
         for (var i = 0; i < cards.length; i++) {
-            processCard(cards[i], config);
+            processCard(cards[i], config, dictionary);
         }
     });
 
@@ -66,7 +82,7 @@ import { Buffer } from "buffer";
         }
     }
 
-    function processCard(card, config) {
+    function processCard(card, config, dictionary) {
         var dataEl = card.querySelector(".rc-message-log__data");
         var body = card.querySelector(".rc-message-log__body");
         if (!dataEl || !body) {
@@ -87,6 +103,7 @@ import { Buffer } from "buffer";
             return;
         }
 
+        payload.dictionary = dictionary;
         payload.nonce = config.nonce;
 
         setStatus(body, config.i18n && config.i18n.sending);
@@ -141,6 +158,94 @@ import { Buffer } from "buffer";
         }
 
         return { format: "jet", header: header, tables: tables };
+    }
+
+    /**
+     * Preferred language, in order, when a dictionary entry has text in
+     * more than one — French first since this tool's UI is French, then
+     * English, then German (the KUKA HMI's own default authoring
+     * language), matching Languages.Language_id in the Jet DBs seen so far.
+     */
+    var DICTIONARY_LANGUAGE_PRIORITY = [12, 9, 7];
+
+    /**
+     * Scans every Jet-format card up front (before any of them are
+     * actually processed) for the `Items`+`Messages` "message dictionary"
+     * schema — distinct from the `LogXxx` message-log schema buildJetPayload()
+     * reads — and merges whatever it finds into one flat "Module#Key" → text
+     * lookup. A card that fails to open, or has neither table, simply
+     * contributes nothing; this never throws, since the dictionary is a
+     * bonus enrichment, not something any card's own analysis depends on.
+     */
+    function buildDictionary(cards) {
+        var dictionary = {};
+
+        for (var i = 0; i < cards.length; i++) {
+            var dataEl = cards[i].querySelector(".rc-message-log__data");
+            if (!dataEl || (dataEl.getAttribute("data-format") || "jet") !== "jet") {
+                continue;
+            }
+
+            try {
+                var buffer = Buffer.from((dataEl.textContent || "").trim(), "base64");
+                var reader = new MDBReader(buffer);
+                var tableNames = reader.getTableNames();
+                if (tableNames.indexOf("Items") === -1 || tableNames.indexOf("Messages") === -1) {
+                    continue;
+                }
+
+                var items = reader.getTable("Items").getData();
+                var messages = reader.getTable("Messages").getData();
+
+                var textsByKeyId = {};
+                for (var m = 0; m < messages.length; m++) {
+                    var row = messages[m];
+                    if (!row || !row.String) {
+                        continue;
+                    }
+                    textsByKeyId[row.Key_id] = textsByKeyId[row.Key_id] || {};
+                    textsByKeyId[row.Key_id][row.Language_id] = row.String;
+                }
+
+                for (var it = 0; it < items.length; it++) {
+                    var item = items[it];
+                    if (!item || !item.Module || !item.KeyString) {
+                        continue;
+                    }
+                    var texts = textsByKeyId[item.Key_id];
+                    if (!texts) {
+                        continue;
+                    }
+
+                    var text = null;
+                    for (var lp = 0; lp < DICTIONARY_LANGUAGE_PRIORITY.length; lp++) {
+                        if (texts[DICTIONARY_LANGUAGE_PRIORITY[lp]]) {
+                            text = texts[DICTIONARY_LANGUAGE_PRIORITY[lp]];
+                            break;
+                        }
+                    }
+                    if (!text) {
+                        var languageIds = Object.keys(texts);
+                        for (var li = 0; li < languageIds.length; li++) {
+                            if (texts[languageIds[li]]) {
+                                text = texts[languageIds[li]];
+                                break;
+                            }
+                        }
+                    }
+
+                    if (text) {
+                        dictionary[item.Module + "#" + item.KeyString] = text;
+                    }
+                }
+            } catch (e) {
+                // Not every Jet file is a dictionary — a genuine message-log
+                // database (KukaLog.mdb) will simply lack these tables and
+                // land here or in the "continue" above; either way, skip it.
+            }
+        }
+
+        return dictionary;
     }
 
     // -- Classic Windows Event Log (.evt) ---------------------------------

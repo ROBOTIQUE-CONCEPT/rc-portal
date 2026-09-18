@@ -31,6 +31,21 @@ defined('ABSPATH') || exit;
  *   `LogMessage`/`LogDBModul`/`LogDBKey` columns) into that record's single
  *   insertion string as `\n`-delimited lines; see parseEvtMessage() below
  *   for the exact layout, reverse-engineered from real sample archives.
+ *
+ * Both formats only carry a numeric/short-string `module`+`key` pair per
+ * entry, not human-readable text. Some archives separately contain a small
+ * Jet/Access "message dictionary" (`Items` + `Messages` tables — distinct
+ * from the message-log tables above, and typically in its own file, e.g.
+ * `MessAppli.mdb`) mapping exactly that same `module`+`key` pair to actual
+ * text, per language: `Items` (Module, KeyString, Key_id) joined to
+ * `Messages` (Key_id, Language_id, String). The browser builds this
+ * lookup once across every Jet file present (see buildDictionary() in
+ * message-logs.js) and sends it along with every card's payload;
+ * translateMessage() below applies it. This only ever covers messages an
+ * integrator defined for their own application (KUKA's own built-in system
+ * message codes aren't shipped as data anywhere in the archive), so most
+ * entries — particularly system-level ones — legitimately have no
+ * translation and fall back to showing just their code.
  */
 final class MessageLogProcessor
 {
@@ -110,9 +125,10 @@ final class MessageLogProcessor
 
     /**
      * @param array<int,mixed> $rows raw rows of one log table, as extracted by mdb-reader
-     * @return array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>
+     * @param array<string,string> $dictionary "Module#Key" => translated text, built client-side across every Jet dictionary file present — see the class docblock and translateMessage()
+     * @return array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}>
      */
-    public static function processLogTable(array $rows, string $table): array
+    public static function processLogTable(array $rows, string $table, array $dictionary = []): array
     {
         $out = [];
         foreach ($rows as $row) {
@@ -129,6 +145,9 @@ final class MessageLogProcessor
                 continue;
             }
 
+            $module = KukaArchiveAnalyzer::normalizeEncoding((string) ($row['LogDBModul'] ?? '')) ?: null;
+            $key = isset($row['LogDBKey']) ? (string) $row['LogDBKey'] : null;
+
             $out[] = [
                 'category' => $table,
                 'date' => self::filetimeToDate($row['LogLowDateTime'] ?? null, $row['LogHighDateTime'] ?? null),
@@ -136,14 +155,35 @@ final class MessageLogProcessor
                 'instance' => KukaArchiveAnalyzer::normalizeEncoding((string) ($row['LogInstance'] ?? '')) ?: null,
                 'messageCode' => isset($row['LogMessage']) ? (string) $row['LogMessage'] : null,
                 'level' => isset($row['LogLevel']) ? (string) $row['LogLevel'] : null,
-                'module' => KukaArchiveAnalyzer::normalizeEncoding((string) ($row['LogDBModul'] ?? '')) ?: null,
-                'key' => isset($row['LogDBKey']) ? (string) $row['LogDBKey'] : null,
+                'module' => $module,
+                'key' => $key,
                 'class' => isset($row['LogClass']) ? (string) $row['LogClass'] : null,
                 'type' => isset($row['LogType']) ? (string) $row['LogType'] : null,
+                'message' => self::translateMessage($module, $key, $dictionary),
             ];
         }
 
         return $out;
+    }
+
+    /**
+     * Looks up a log entry's human-readable text in the browser-built
+     * "Module#Key" dictionary (see the class docblock) — a plain flat
+     * lookup, not a template substitution: real sample archives seen so far
+     * have every dictionary entry's `ParameterFlag` false, i.e. no `%n`-style
+     * placeholders to fill in, so none is attempted here. Returns null
+     * (rendered as "—") whenever the module/key is absent or has no match,
+     * which is the common case for KUKA's own built-in system messages.
+     */
+    private static function translateMessage(?string $module, ?string $key, array $dictionary): ?string
+    {
+        if ($module === null || $key === null || $module === '' || $key === '') {
+            return null;
+        }
+
+        $text = $dictionary["$module#$key"] ?? null;
+
+        return is_string($text) && $text !== '' ? $text : null;
     }
 
     /**
@@ -233,9 +273,10 @@ final class MessageLogProcessor
      * parseEvtMessage() and the class docblock.
      *
      * @param array{timeGenerated?:mixed,eventType?:mixed,eventCategory?:mixed,sourceName?:mixed,message?:mixed} $record
-     * @return array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}
+     * @param array<string,string> $dictionary "Module#Key" => translated text — see the class docblock and translateMessage()
+     * @return array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}
      */
-    public static function processEvtRecord(array $record, string $category): array
+    public static function processEvtRecord(array $record, string $category, array $dictionary = []): array
     {
         $date = null;
         $timeGenerated = $record['timeGenerated'] ?? null;
@@ -272,6 +313,7 @@ final class MessageLogProcessor
             'key' => $parsed['key'],
             'class' => null,
             'type' => null,
+            'message' => self::translateMessage($parsed['module'], $parsed['key'], $dictionary),
         ];
     }
 

@@ -55,6 +55,21 @@ final class MessageLogAjaxHandler
         // renderMessageLogDatabaseCard().
         $format = isset($payload['format']) && $payload['format'] === 'evt' ? 'evt' : 'jet';
 
+        // Built client-side across every Jet dictionary file present in the
+        // archive (see MessageLogProcessor's class docblock and
+        // buildDictionary() in message-logs.js) and sent along with every
+        // card's own payload, since a log entry and the dictionary that
+        // translates it are often in two different files.
+        $dictionary = [];
+        if (isset($payload['dictionary']) && is_array($payload['dictionary'])) {
+            foreach ($payload['dictionary'] as $dictKey => $dictValue) {
+                if (! is_string($dictKey) || $dictKey === '' || ! is_scalar($dictValue)) {
+                    continue;
+                }
+                $dictionary[$dictKey] = sanitize_text_field((string) $dictValue);
+            }
+        }
+
         if ($format === 'evt') {
             $category = isset($payload['category']) ? sanitize_text_field((string) $payload['category']) : '';
             $records = isset($payload['records']) && is_array($payload['records']) ? $payload['records'] : [];
@@ -64,7 +79,7 @@ final class MessageLogAjaxHandler
                 if (! is_array($record)) {
                     continue;
                 }
-                $entries[] = MessageLogProcessor::processEvtRecord($record, $category);
+                $entries[] = MessageLogProcessor::processEvtRecord($record, $category, $dictionary);
             }
 
             $database = [
@@ -83,7 +98,7 @@ final class MessageLogAjaxHandler
                 if (! isset($tablesPayload[$table]) || ! is_array($tablesPayload[$table])) {
                     continue;
                 }
-                foreach (MessageLogProcessor::processLogTable($tablesPayload[$table], $table) as $row) {
+                foreach (MessageLogProcessor::processLogTable($tablesPayload[$table], $table, $dictionary) as $row) {
                     $entries[] = $row;
                 }
             }

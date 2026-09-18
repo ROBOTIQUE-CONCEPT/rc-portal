@@ -881,7 +881,7 @@ final class ToolsPages
      * it read client-side (see renderMessageLogs() for the placeholder
      * whose `.rc-message-log__body` this replaces).
      *
-     * @param array{header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>,error:?string} $database
+     * @param array{header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}>,error:?string} $database
      */
     public function renderMessageLogDatabaseCard(array $database): string
     {
@@ -913,14 +913,14 @@ final class ToolsPages
                 <?php if ($totalEntries > self::MAX_LOG_ROWS_DISPLAYED) : ?>
                     <?php echo esc_html(sprintf(
                         /* translators: 1: number of rows shown, 2: total number of rows found */
-                        __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                        __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA ; le texte du message n\'est affiché que si un dictionnaire de messages personnalisés est présent dans l\'archive — les codes système KUKA n\'en ont pas).', 'rc-portal'),
                         count($displayEntries),
                         $totalEntries
                     )); ?>
                 <?php else : ?>
                     <?php echo esc_html(sprintf(
                         /* translators: %d: number of message-log rows found */
-                        __('%d messages, du plus récent au plus ancien (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                        __('%d messages, du plus récent au plus ancien (code = référence interne KUKA ; le texte du message n\'est affiché que si un dictionnaire de messages personnalisés est présent dans l\'archive — les codes système KUKA n\'en ont pas).', 'rc-portal'),
                         $totalEntries
                     )); ?>
                 <?php endif; ?>
@@ -935,6 +935,7 @@ final class ToolsPages
                         <th><?php esc_html_e('Source', 'rc-portal'); ?></th>
                         <th><?php esc_html_e('Code', 'rc-portal'); ?></th>
                         <th><?php esc_html_e('Clé', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Message', 'rc-portal'); ?></th>
                     </tr>
                     </thead>
                     <tbody>
@@ -946,6 +947,7 @@ final class ToolsPages
                             <td><?php echo esc_html($entry['source'] ?? '—'); ?></td>
                             <td><?php echo esc_html($entry['messageCode'] ?? '—'); ?></td>
                             <td><?php echo esc_html($entry['key'] ?? '—'); ?></td>
+                            <td><?php echo esc_html($entry['message'] ?? '—'); ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
