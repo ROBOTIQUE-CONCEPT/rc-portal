@@ -25,9 +25,6 @@ final class ToolsPages
      */
     private const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 
-    /** A parsed message-log database can hold 1000+ rows; cap the table to the most recent ones so the page stays usable. */
-    private const MAX_LOG_ROWS_DISPLAYED = 200;
-
     // -- Dashboard -------------------------------------------------------
 
     public function renderDashboard(object $context): string
@@ -811,23 +808,26 @@ final class ToolsPages
     }
 
     /**
-     * Renders one placeholder card per detected message-log file — the
-     * bundled reader JS (assets/js-src/message-logs.js, enqueued by
-     * enqueueMessageLogAssets()) reads each one's embedded base64 bytes
-     * directly in the browser (`mdb-reader` for `format: "jet"`, a
-     * hand-written parser for `format: "evt"`), posts the raw rows/records
-     * to MessageLogAjaxHandler, and replaces this placeholder's
-     * `.rc-message-log__body` with the returned HTML
-     * (renderMessageLogDatabaseCard()). See this tool's "no persistence"
-     * note in ToolsModule's docblock: the base64 blob below only ever
-     * exists in this response and the browser's own page memory, never
-     * written to disk again on either side.
+     * Renders every detected message-log file as an invisible data carrier
+     * (its base64 bytes plus format/category, exactly as before) followed
+     * by ONE results container. All the actual work — reading each file
+     * (`mdb-reader` for `format: "jet"`, a hand-written parser for
+     * `format: "evt"`), merging the bundled + any archive-embedded
+     * translation dictionaries, sending everything to
+     * MessageLogAjaxHandler in a single request, and rendering the merged,
+     * paginated, filterable table into `[data-rc-message-log-results]` —
+     * happens in assets/js-src/message-logs.js (enqueued by
+     * enqueueMessageLogAssets()); this method only emits the container and
+     * the data it needs. See this tool's "no persistence" note in
+     * ToolsModule's docblock: the base64 blobs below only ever exist in
+     * this response and the browser's own page memory, never written to
+     * disk again on either side.
      *
      * For `evt` files, the category (derived from the file name — see
      * MessageLogProcessor::evtCategoryFromFileName()) is computed once
-     * here and passed through via `data-category`, since the AJAX response
-     * doesn't re-send the file name and the filename→category mapping
-     * should live in exactly one place.
+     * here and passed through via `data-category`, since the AJAX request
+     * doesn't otherwise carry the file name and the filename→category
+     * mapping should live in exactly one place.
      */
     private function renderMessageLogs(KukaArchiveReport $report): string
     {
@@ -840,6 +840,7 @@ final class ToolsPages
             'ajaxUrl' => admin_url('admin-ajax.php?action=' . MessageLogAjaxHandler::ACTION),
             'nonce' => wp_create_nonce(MessageLogAjaxHandler::NONCE_ACTION),
             'logTables' => MessageLogProcessor::LOG_TABLES,
+            'dictionaryUrl' => plugins_url('modules/tools/assets/data/kuka-message-dictionary.json', RC_PORTAL_FILE),
         ];
 
         ob_start();
@@ -847,113 +848,25 @@ final class ToolsPages
         <script type="application/json" id="rc-tools-message-log-config"><?php echo wp_json_encode($config); ?></script>
 
         <?php foreach ($messageLogs['databases'] as $database) : ?>
-            <div class="rc-card" data-rc-message-log>
-                <div class="rc-card__header">
-                    <h3>
-                        <?php echo esc_html($database['fileName']); ?>
-                        (<?php echo esc_html(size_format($database['size'])); ?>,
-                        <?php echo esc_html($this->formatDateTime($database['lastModified'])); ?>)
-                    </h3>
-                </div>
-                <div class="rc-message-log__body">
-                    <p class="rc-field--help"><?php esc_html_e('Analyse en cours dans le navigateur…', 'rc-portal'); ?></p>
-                </div>
-                <script
-                    type="text/plain"
-                    class="rc-message-log__data"
-                    data-filename="<?php echo esc_attr($database['fileName']); ?>"
-                    data-size="<?php echo esc_attr((string) $database['size']); ?>"
-                    data-lastmodified="<?php echo esc_attr($database['lastModified'] !== null ? (string) $database['lastModified']->getTimestamp() : '0'); ?>"
-                    data-format="<?php echo esc_attr($database['format']); ?>"
-                    data-category="<?php echo esc_attr($database['format'] === 'evt' ? MessageLogProcessor::evtCategoryFromFileName($database['fileName']) : ''); ?>"
-                ><?php echo esc_html($database['dataBase64']); ?></script>
-            </div>
+            <script
+                type="text/plain"
+                class="rc-message-log__data"
+                data-filename="<?php echo esc_attr($database['fileName']); ?>"
+                data-format="<?php echo esc_attr($database['format']); ?>"
+                data-category="<?php echo esc_attr($database['format'] === 'evt' ? MessageLogProcessor::evtCategoryFromFileName($database['fileName']) : ''); ?>"
+            ><?php echo esc_html($database['dataBase64']); ?></script>
         <?php endforeach; ?>
-        <?php
-        return (string) ob_get_clean();
-    }
 
-    /**
-     * Renders the body of one message-log database card — the KUKA-provided
-     * `LogHeader` fields plus its message table — from rows a browser
-     * already extracted and MessageLogProcessor already shaped. Public:
-     * called from MessageLogAjaxHandler once a browser posts back the rows
-     * it read client-side (see renderMessageLogs() for the placeholder
-     * whose `.rc-message-log__body` this replaces).
-     *
-     * @param array{header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}>,error:?string} $database
-     */
-    public function renderMessageLogDatabaseCard(array $database): string
-    {
-        ob_start();
-        ?>
-        <?php if ($database['error'] !== null) : ?>
-            <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($database['error']); ?></div>
-        <?php elseif ($database['entries'] === []) : ?>
-            <p class="rc-field--help"><?php esc_html_e('Aucun message dans les tables de journal connues de ce fichier.', 'rc-portal'); ?></p>
-        <?php else : ?>
-            <?php if ($database['header'] !== null && $database['header'] !== []) : ?>
-                <div class="rc-field-grid">
-                    <?php foreach ($database['header'] as $key => $value) : ?>
-                        <?php if (trim((string) $value) === '') continue; ?>
-                        <div class="rc-field">
-                            <label><?php echo esc_html($key); ?></label>
-                            <span><?php echo esc_html($value); ?></span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-            <?php
-            $totalEntries = count($database['entries']);
-            $displayEntries = $database['entries'];
-            usort($displayEntries, static fn (array $a, array $b): int => ($b['date']?->getTimestamp() ?? 0) <=> ($a['date']?->getTimestamp() ?? 0));
-            $displayEntries = array_slice($displayEntries, 0, self::MAX_LOG_ROWS_DISPLAYED);
-            ?>
-            <p class="rc-field--help">
-                <?php if ($totalEntries > self::MAX_LOG_ROWS_DISPLAYED) : ?>
-                    <?php echo esc_html(sprintf(
-                        /* translators: 1: number of rows shown, 2: total number of rows found */
-                        __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA ; le texte du message n\'est affiché que si un dictionnaire de messages personnalisés est présent dans l\'archive — les codes système KUKA n\'en ont pas).', 'rc-portal'),
-                        count($displayEntries),
-                        $totalEntries
-                    )); ?>
-                <?php else : ?>
-                    <?php echo esc_html(sprintf(
-                        /* translators: %d: number of message-log rows found */
-                        __('%d messages, du plus récent au plus ancien (code = référence interne KUKA ; le texte du message n\'est affiché que si un dictionnaire de messages personnalisés est présent dans l\'archive — les codes système KUKA n\'en ont pas).', 'rc-portal'),
-                        $totalEntries
-                    )); ?>
-                <?php endif; ?>
-            </p>
-            <div class="rc-table-wrap">
-                <table class="rc-table">
-                    <thead>
-                    <tr>
-                        <th><?php esc_html_e('Date', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Catégorie', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Niveau', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Source', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Code', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Clé', 'rc-portal'); ?></th>
-                        <th><?php esc_html_e('Message', 'rc-portal'); ?></th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($displayEntries as $entry) : ?>
-                        <tr>
-                            <td><?php echo esc_html($this->formatDateTime($entry['date'])); ?></td>
-                            <td><?php echo esc_html($entry['category']); ?></td>
-                            <td><?php echo esc_html($entry['level'] ?? '—'); ?></td>
-                            <td><?php echo esc_html($entry['source'] ?? '—'); ?></td>
-                            <td><?php echo esc_html($entry['messageCode'] ?? '—'); ?></td>
-                            <td><?php echo esc_html($entry['key'] ?? '—'); ?></td>
-                            <td><?php echo esc_html($entry['message'] ?? '—'); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        <?php endif; ?>
+        <p class="rc-field--help">
+            <?php echo esc_html(sprintf(
+                /* translators: %s: comma-separated list of file names */
+                __('Fichiers de journal détectés : %s', 'rc-portal'),
+                implode(', ', array_map(static fn (array $d): string => $d['fileName'], $messageLogs['databases']))
+            )); ?>
+        </p>
+        <div data-rc-message-log-results>
+            <p class="rc-field--help"><?php esc_html_e('Analyse en cours dans le navigateur…', 'rc-portal'); ?></p>
+        </div>
         <?php
         return (string) ob_get_clean();
     }

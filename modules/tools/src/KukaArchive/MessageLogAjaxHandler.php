@@ -4,16 +4,20 @@ declare(strict_types=1);
 
 namespace RC\Portal\Modules\Tools\KukaArchive;
 
-use RC\Portal\Modules\Tools\Ui\ToolsPages;
-
 defined('ABSPATH') || exit;
 
 /**
  * WordPress AJAX endpoint consuming the raw rows/records a browser
- * extracted client-side (see assets/js-src/message-logs.js) from one KUKA
- * message-log file — a Jet/Access database (`format: "jet"`) or a classic
- * Windows Event Log file (`format: "evt"`) — and returning the rendered
- * HTML fragment for that file's card (Ui\ToolsPages::renderMessageLogDatabaseCard()).
+ * extracted client-side (see assets/js-src/message-logs.js) from every
+ * KUKA message-log file in one archive — Jet/Access databases
+ * (`format: "jet"`) and classic Windows Event Log files
+ * (`format: "evt"`) alike — in a single request, and returning one merged,
+ * translated, JSON-encoded list of entries. The browser renders the actual
+ * table (with its pagination/filter/search UI — see message-logs.js);
+ * this endpoint only applies the already-validated PHP-side business logic
+ * (timestamp handling, corrupted-row filtering, message-code translation)
+ * that was already proven out per-file before this endpoint learned to
+ * merge them.
  *
  * Nothing here is written to disk or persisted anywhere: the JSON request
  * body is processed and discarded once the response is sent, exactly like
@@ -48,52 +52,44 @@ final class MessageLogAjaxHandler
             wp_send_json_error(['message' => __('La demande a expiré, veuillez recharger la page.', 'rc-portal')], 403);
         }
 
-        // fileName/size/lastModified are deliberately not read from the
-        // payload: the card's header (filename, size, last-modified) was
-        // already rendered server-side in the placeholder this response
-        // replaces the *body* of — see ToolsPages::renderMessageLogs() and
-        // renderMessageLogDatabaseCard().
-        $format = isset($payload['format']) && $payload['format'] === 'evt' ? 'evt' : 'jet';
+        $dictionary = self::sanitizeDictionary($payload['dictionary'] ?? null);
 
-        // Built client-side across every Jet dictionary file present in the
-        // archive (see MessageLogProcessor's class docblock and
-        // buildDictionary() in message-logs.js) and sent along with every
-        // card's own payload, since a log entry and the dictionary that
-        // translates it are often in two different files.
-        $dictionary = [];
-        if (isset($payload['dictionary']) && is_array($payload['dictionary'])) {
-            foreach ($payload['dictionary'] as $dictKey => $dictValue) {
-                if (! is_string($dictKey) || $dictKey === '' || ! is_scalar($dictValue)) {
-                    continue;
-                }
-                $dictionary[$dictKey] = sanitize_text_field((string) $dictValue);
-            }
-        }
+        $files = isset($payload['files']) && is_array($payload['files']) ? $payload['files'] : [];
 
-        if ($format === 'evt') {
-            $category = isset($payload['category']) ? sanitize_text_field((string) $payload['category']) : '';
-            $records = isset($payload['records']) && is_array($payload['records']) ? $payload['records'] : [];
+        $entries = [];
+        $headers = [];
 
-            $entries = [];
-            foreach ($records as $record) {
-                if (! is_array($record)) {
-                    continue;
-                }
-                $entries[] = MessageLogProcessor::processEvtRecord($record, $category, $dictionary);
+        foreach ($files as $file) {
+            if (! is_array($file)) {
+                continue;
             }
 
-            $database = [
-                'header' => null,
-                'entries' => $entries,
-                'error' => null,
-            ];
-        } else {
-            $headerRows = isset($payload['header']) && is_array($payload['header']) ? $payload['header'] : [];
-            $header = $headerRows !== [] ? MessageLogProcessor::processHeader($headerRows) : null;
+            if (isset($file['format']) && $file['format'] === 'evt') {
+                $category = isset($file['category']) ? sanitize_text_field((string) $file['category']) : '';
+                $records = isset($file['records']) && is_array($file['records']) ? $file['records'] : [];
 
-            $tablesPayload = isset($payload['tables']) && is_array($payload['tables']) ? $payload['tables'] : [];
+                foreach ($records as $record) {
+                    if (! is_array($record)) {
+                        continue;
+                    }
+                    $entries[] = MessageLogProcessor::processEvtRecord($record, $category, $dictionary);
+                }
 
-            $entries = [];
+                continue;
+            }
+
+            // "jet" (default): a file with no matching LOG_TABLES — e.g. a
+            // pure message-dictionary database like MessAppli.mdb — simply
+            // contributes zero entries here, which is expected, not an error.
+            $headerRows = isset($file['header']) && is_array($file['header']) ? $file['header'] : [];
+            if ($headerRows !== []) {
+                $header = MessageLogProcessor::processHeader($headerRows);
+                if ($header !== []) {
+                    $headers[] = $header;
+                }
+            }
+
+            $tablesPayload = isset($file['tables']) && is_array($file['tables']) ? $file['tables'] : [];
             foreach (MessageLogProcessor::LOG_TABLES as $table) {
                 if (! isset($tablesPayload[$table]) || ! is_array($tablesPayload[$table])) {
                     continue;
@@ -102,16 +98,44 @@ final class MessageLogAjaxHandler
                     $entries[] = $row;
                 }
             }
-
-            $database = [
-                'header' => $header,
-                'entries' => $entries,
-                'error' => null,
-            ];
         }
 
-        $html = (new ToolsPages())->renderMessageLogDatabaseCard($database);
+        // The browser does all display-side sorting/filtering/pagination
+        // (see message-logs.js) over plain JSON, so DateTimeImmutable is
+        // serialized to a Unix timestamp (or null) here rather than shipped
+        // as an object — JS reconstructs it with `new Date(seconds * 1000)`.
+        foreach ($entries as &$entry) {
+            $entry['date'] = $entry['date']?->getTimestamp();
+        }
+        unset($entry);
 
-        wp_send_json_success(['html' => $html]);
+        wp_send_json_success(['entries' => $entries, 'headers' => $headers]);
+    }
+
+    /**
+     * @param mixed $raw the payload's `dictionary` field, straight from json_decode()
+     * @return array{byModuleKey:array<string,string>,byKey:array<string,string>}
+     */
+    private static function sanitizeDictionary(mixed $raw): array
+    {
+        $result = ['byModuleKey' => [], 'byKey' => []];
+
+        if (! is_array($raw)) {
+            return $result;
+        }
+
+        foreach (['byModuleKey', 'byKey'] as $mapName) {
+            if (! isset($raw[$mapName]) || ! is_array($raw[$mapName])) {
+                continue;
+            }
+            foreach ($raw[$mapName] as $key => $value) {
+                if (! is_string($key) || $key === '' || ! is_scalar($value)) {
+                    continue;
+                }
+                $result[$mapName][$key] = sanitize_text_field((string) $value);
+            }
+        }
+
+        return $result;
     }
 }

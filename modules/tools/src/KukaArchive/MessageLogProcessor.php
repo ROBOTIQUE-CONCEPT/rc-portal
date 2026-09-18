@@ -33,19 +33,36 @@ defined('ABSPATH') || exit;
  *   for the exact layout, reverse-engineered from real sample archives.
  *
  * Both formats only carry a numeric/short-string `module`+`key` pair per
- * entry, not human-readable text. Some archives separately contain a small
- * Jet/Access "message dictionary" (`Items` + `Messages` tables — distinct
- * from the message-log tables above, and typically in its own file, e.g.
- * `MessAppli.mdb`) mapping exactly that same `module`+`key` pair to actual
- * text, per language: `Items` (Module, KeyString, Key_id) joined to
- * `Messages` (Key_id, Language_id, String). The browser builds this
- * lookup once across every Jet file present (see buildDictionary() in
- * message-logs.js) and sends it along with every card's payload;
- * translateMessage() below applies it. This only ever covers messages an
- * integrator defined for their own application (KUKA's own built-in system
- * message codes aren't shipped as data anywhere in the archive), so most
- * entries — particularly system-level ones — legitimately have no
- * translation and fall back to showing just their code.
+ * entry, not human-readable text. Two sources feed a "Module#Key" → text
+ * dictionary that translateMessage() below applies:
+ *
+ * - A bundled, generic dictionary this plugin ships as a static asset
+ *   (assets/data/kuka-message-dictionary.json, fetched once by the
+ *   browser — see message-logs.js and build-dictionary.mjs) built from
+ *   KUKA's own message-text export, covering the system-level modules
+ *   (`CrossMeld`, `Cross3Boot`, …). Not every archive's controller ships
+ *   this file, which is why it's bundled with the tool instead of read
+ *   from the archive.
+ * - Some archives separately contain their own small Jet/Access "message
+ *   dictionary" (`Items` + `Messages` tables — distinct from the
+ *   message-log tables above, typically in its own file, e.g.
+ *   `MessAppli.mdb`) covering messages an integrator configured for their
+ *   own application on top of KUKA's system ones. The browser reads any
+ *   such file the same way (see buildDictionary() in message-logs.js) and
+ *   merges it over the bundled one, so an archive-specific entry always
+ *   wins on a collision.
+ *
+ * Both use the exact same schema: `Items` (Module, KeyString, Key_id)
+ * joined to `Messages` (Key_id, Language_id, String). Even with both
+ * sources, some entries still have no match (an unfamiliar module, or a
+ * message this plugin's bundled export doesn't carry) and fall back to
+ * showing just their code.
+ *
+ * A resolved message template can itself contain `%1`, `%2`, … parameter
+ * placeholders; substituteParameters() below fills those in from the
+ * parameter values evt records embed alongside the code (see
+ * parseEvtMessage()) — jet's own equivalent (`...Param` companion tables)
+ * isn't read, so jet-format messages are never substituted, only looked up.
  */
 final class MessageLogProcessor
 {
@@ -53,11 +70,11 @@ final class MessageLogProcessor
      * Message-log tables this tool understands (and asks the browser to
      * read, via the `logTables` list embedded in the page — see
      * Ui\ToolsPages::renderMessageLogs()). The `...Param` companion tables
-     * (structured parameters for message-template substitution) and
-     * `Version` are deliberately not read: without KUKA's own
-     * message-template dictionary they can't be turned into readable text,
-     * so this class exposes the raw log rows (code, source, class, level)
-     * instead of attempting a partial, potentially misleading substitution.
+     * (structured parameters for a jet entry's own message-template
+     * substitution) and `Version` are deliberately not read — unlike the
+     * `evt` format's embedded parameters (see the class docblock and
+     * substituteParameters()), so a translated jet message's `%n`
+     * placeholders, if any, are left as-is rather than partially filled in.
      */
     public const LOG_TABLES = [
         'LogBootE', 'LogBootW', 'LogBootI',
@@ -125,7 +142,7 @@ final class MessageLogProcessor
 
     /**
      * @param array<int,mixed> $rows raw rows of one log table, as extracted by mdb-reader
-     * @param array<string,string> $dictionary "Module#Key" => translated text, built client-side across every Jet dictionary file present — see the class docblock and translateMessage()
+     * @param array{byModuleKey?:array<string,string>,byKey?:array<string,string>} $dictionary merged dictionary (bundled asset + any archive-embedded Jet dictionaries) — see the class docblock and translateMessage()
      * @return array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}>
      */
     public static function processLogTable(array $rows, string $table, array $dictionary = []): array
@@ -167,23 +184,55 @@ final class MessageLogProcessor
     }
 
     /**
-     * Looks up a log entry's human-readable text in the browser-built
-     * "Module#Key" dictionary (see the class docblock) — a plain flat
-     * lookup, not a template substitution: real sample archives seen so far
-     * have every dictionary entry's `ParameterFlag` false, i.e. no `%n`-style
-     * placeholders to fill in, so none is attempted here. Returns null
-     * (rendered as "—") whenever the module/key is absent or has no match,
-     * which is the common case for KUKA's own built-in system messages.
+     * Looks up a log entry's human-readable text in the merged dictionary
+     * (see the class docblock and build-dictionary.mjs) — `$dictionary` has
+     * two maps: `byModuleKey` ("Module#Key" → text, tried first when a
+     * module is known) and `byKey` (bare key → text, tried when the exact
+     * pair has no match, or no module was available at all — a `.evt`
+     * record's own sub-format sometimes omits it, see parseEvtMessage()).
+     * Returns null (rendered as "—") when neither lookup matches.
+     *
+     * @param array{byModuleKey?:array<string,string>,byKey?:array<string,string>} $dictionary
      */
     private static function translateMessage(?string $module, ?string $key, array $dictionary): ?string
     {
-        if ($module === null || $key === null || $module === '' || $key === '') {
+        if ($key === null || $key === '') {
             return null;
         }
 
-        $text = $dictionary["$module#$key"] ?? null;
+        if ($module !== null && $module !== '') {
+            $text = $dictionary['byModuleKey']["$module#$key"] ?? null;
+            if (is_string($text) && $text !== '') {
+                return $text;
+            }
+        }
+
+        $text = $dictionary['byKey'][$key] ?? null;
 
         return is_string($text) && $text !== '' ? $text : null;
+    }
+
+    /**
+     * Fills a translated message template's `%1`, `%2`, … placeholders
+     * from a 1-indexed parameter list (index 1 → `$params[0]`, matching
+     * KUKA's own convention — see parseEvtMessage()). A placeholder with no
+     * corresponding parameter is left as-is rather than silently dropped,
+     * since a partially-filled message is still more informative than one
+     * that looks confidently wrong.
+     *
+     * @param array<int,string> $params 0-indexed parameter values
+     */
+    private static function substituteParameters(string $template, array $params): string
+    {
+        return (string) preg_replace_callback(
+            '/%(\d+)/',
+            static function (array $matches) use ($params): string {
+                $index = ((int) $matches[1]) - 1;
+
+                return $params[$index] ?? $matches[0];
+            },
+            $template
+        );
     }
 
     /**
@@ -273,7 +322,7 @@ final class MessageLogProcessor
      * parseEvtMessage() and the class docblock.
      *
      * @param array{timeGenerated?:mixed,eventType?:mixed,eventCategory?:mixed,sourceName?:mixed,message?:mixed} $record
-     * @param array<string,string> $dictionary "Module#Key" => translated text — see the class docblock and translateMessage()
+     * @param array{byModuleKey?:array<string,string>,byKey?:array<string,string>} $dictionary merged dictionary — see the class docblock and translateMessage()
      * @return array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string,message:?string}
      */
     public static function processEvtRecord(array $record, string $category, array $dictionary = []): array
@@ -302,6 +351,11 @@ final class MessageLogProcessor
         $message = isset($record['message']) && is_string($record['message']) ? $record['message'] : '';
         $parsed = self::parseEvtMessage($message);
 
+        $translated = self::translateMessage($parsed['module'], $parsed['key'], $dictionary);
+        if ($translated !== null && $parsed['params'] !== []) {
+            $translated = self::substituteParameters($translated, $parsed['params']);
+        }
+
         return [
             'category' => $category,
             'date' => $date,
@@ -313,7 +367,7 @@ final class MessageLogProcessor
             'key' => $parsed['key'],
             'class' => null,
             'type' => null,
-            'message' => self::translateMessage($parsed['module'], $parsed['key'], $dictionary),
+            'message' => $translated,
         ];
     }
 
@@ -329,19 +383,22 @@ final class MessageLogProcessor
      *   [2] numeric message code                  — matches the Jet DB's `LogMessage`
      *   [3] "Module#Key" (or just "Key" alone)     — matches `LogDBModul`#`LogDBKey`
      *   [4] "Module#ShortKey"                      — matches `LogDBShortKey`, unused here
-     *   [5] "N - parameters"                       — declares the parameter count, unused here
-     *   [6..6+N-1] "idx-value" parameter pairs      — unused here
+     *   [5] "N - parameters"                       — declares the parameter count
+     *   [6..6+N-1] "idx-value" parameter pairs      — idx is 0-indexed and not
+     *       guaranteed to appear in order (seen as "1-LogAxis" then "0-2" in
+     *       a real sample); substituteParameters() maps a template's `%1`
+     *       to idx 0, `%2` to idx 1, and so on
      *   [6+N] "Optional: <value>"                   — unused here
      *
      * Defensive by design: a missing or malformed line simply yields a
-     * null field rather than throwing, since this embedded sub-format is
-     * not documented by KUKA and could plausibly vary between archives.
+     * null/empty field rather than throwing, since this embedded sub-format
+     * is not documented by KUKA and could plausibly vary between archives.
      *
-     * @return array{messageCode:?string,module:?string,key:?string}
+     * @return array{messageCode:?string,module:?string,key:?string,params:array<int,string>}
      */
     public static function parseEvtMessage(string $message): array
     {
-        $result = ['messageCode' => null, 'module' => null, 'key' => null];
+        $result = ['messageCode' => null, 'module' => null, 'key' => null, 'params' => []];
 
         if (trim($message) === '') {
             return $result;
@@ -366,6 +423,18 @@ final class MessageLogProcessor
                     $result['key'] = $key !== '' ? $key : null;
                 } else {
                     $result['key'] = $moduleKey;
+                }
+            }
+        }
+
+        if (isset($lines[5]) && preg_match('/^\s*(\d+)\s*-\s*parameters\s*$/i', $lines[5], $countMatch) === 1) {
+            $count = (int) $countMatch[1];
+            for ($i = 0; $i < $count; $i++) {
+                if (! isset($lines[6 + $i])) {
+                    continue;
+                }
+                if (preg_match('/^(\d+)-(.*)$/', $lines[6 + $i], $paramMatch) === 1) {
+                    $result['params'][(int) $paramMatch[1]] = $paramMatch[2];
                 }
             }
         }
