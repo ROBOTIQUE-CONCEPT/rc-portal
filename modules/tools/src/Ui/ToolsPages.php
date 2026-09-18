@@ -21,7 +21,10 @@ final class ToolsPages
      * KRC archive is a few MB; this stays generous while keeping a hard cap
      * regardless of how a given host's PHP is configured.
      */
-    private const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
+    private const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+    /** A parsed message-log database can hold 1000+ rows; cap the table to the most recent ones so the page stays usable. */
+    private const MAX_LOG_ROWS_DISPLAYED = 200;
 
     // -- Dashboard -------------------------------------------------------
 
@@ -30,15 +33,15 @@ final class ToolsPages
         ob_start();
         ?>
         <div class="rc-tools-dashboard">
-            <div class="rc-page-header">
+            <header class="rc-page-header">
                 <div>
                     <span class="rc-eyebrow"><?php esc_html_e('Outils internes', 'rc-portal'); ?></span>
                     <h1><?php esc_html_e('Outils internes', 'rc-portal'); ?></h1>
                     <p><?php esc_html_e('Une collection d’outils techniques ajoutés au fil de l’eau, sans lien avec l’ERP ou les données métier.', 'rc-portal'); ?></p>
                 </div>
-            </div>
+            </header>
 
-            <div class="rc-module-grid">
+            <div class="rc-module-grid rc-module-grid--square">
                 <a class="rc-module-card" href="<?php echo esc_url(home_url('/tools/kuka-archive/')); ?>">
                     <div class="rc-module-card__top">
                         <span class="rc-module-card__icon" aria-hidden="true">K</span>
@@ -74,39 +77,46 @@ final class ToolsPages
         ob_start();
         ?>
         <div class="rc-tools-kuka-archive">
-            <div class="rc-page-header">
+            <header class="rc-page-header">
                 <div>
                     <span class="rc-eyebrow"><?php esc_html_e('Outils internes', 'rc-portal'); ?></span>
                     <h1><?php esc_html_e("Analyseur d'archive KUKA", 'rc-portal'); ?></h1>
-                    <p><?php esc_html_e('Charge une archive de sauvegarde KUKA Archive Manager (.zip) pour en extraire les informations utiles au diagnostic. Rien n’est conservé au-delà de cette analyse : le fichier n’est jamais enregistré sur le serveur, il est traité en mémoire puis supprimé à la fin de la requête.', 'rc-portal'); ?></p>
+                    <p><?php esc_html_e('Charge une archive de sauvegarde KUKA Archive Manager (.zip) pour en extraire les informations utiles au diagnostic. Rien n’est conservé au-delà de cette analyse : le fichier est traité en mémoire (et via un fichier temporaire strictement transitoire pour les journaux de messages) puis supprimé à la fin de la requête.', 'rc-portal'); ?></p>
                 </div>
-            </div>
+                <?php if ($report !== null) : ?>
+                    <div>
+                        <a class="rc-button" href="<?php echo esc_url(home_url('/tools/kuka-archive/')); ?>">
+                            <?php esc_html_e('Nouvelle analyse', 'rc-portal'); ?>
+                        </a>
+                    </div>
+                <?php endif; ?>
+            </header>
 
             <?php if ($error !== null) : ?>
                 <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($error); ?></div>
             <?php endif; ?>
 
-            <div class="rc-card">
-                <div class="rc-card__header"><h3><?php esc_html_e('Charger une archive', 'rc-portal'); ?></h3></div>
-                <form method="post" enctype="multipart/form-data">
-                    <input type="hidden" name="rc_tools_action" value="analyze">
-                    <input type="hidden" name="rc_tools_nonce" value="<?php echo esc_attr(wp_create_nonce('rc_tools_kuka_archive')); ?>">
-                    <div class="rc-field">
-                        <label for="rc-tools-kuka-file"><?php esc_html_e('Archive (.zip)', 'rc-portal'); ?></label>
-                        <input type="file" id="rc-tools-kuka-file" name="archive" accept=".zip" required>
-                        <p class="rc-field--help">
-                            <?php echo esc_html(sprintf(
-                                /* translators: %s: maximum upload size, formatted (e.g. "80 MB") */
-                                __('Taille maximale : %s.', 'rc-portal'),
-                                size_format(self::maxUploadBytes())
-                            )); ?>
-                        </p>
-                    </div>
-                    <button type="submit" class="rc-button rc-button--primary"><?php esc_html_e('Analyser', 'rc-portal'); ?></button>
-                </form>
-            </div>
-
-            <?php if ($report !== null) : ?>
+            <?php if ($report === null) : ?>
+                <div class="rc-card">
+                    <div class="rc-card__header"><h3><?php esc_html_e('Charger une archive', 'rc-portal'); ?></h3></div>
+                    <form method="post" enctype="multipart/form-data">
+                        <input type="hidden" name="rc_tools_action" value="analyze">
+                        <input type="hidden" name="rc_tools_nonce" value="<?php echo esc_attr(wp_create_nonce('rc_tools_kuka_archive')); ?>">
+                        <div class="rc-field">
+                            <label for="rc-tools-kuka-file"><?php esc_html_e('Archive (.zip)', 'rc-portal'); ?></label>
+                            <input type="file" id="rc-tools-kuka-file" name="archive" accept=".zip" required>
+                            <p class="rc-field--help">
+                                <?php echo esc_html(sprintf(
+                                    /* translators: %s: maximum upload size, formatted (e.g. "64 MB") */
+                                    __('Taille maximale : %s.', 'rc-portal'),
+                                    size_format(self::maxUploadBytes())
+                                )); ?>
+                            </p>
+                        </div>
+                        <button type="submit" class="rc-button rc-button--primary"><?php esc_html_e('Analyser', 'rc-portal'); ?></button>
+                    </form>
+                </div>
+            <?php else : ?>
                 <?php echo $this->renderKukaReport($report); ?>
             <?php endif; ?>
         </div>
@@ -174,28 +184,55 @@ final class ToolsPages
 
     private function renderKukaReport(KukaArchiveReport $report): string
     {
-        $archive = $report->archive;
-
         ob_start();
         ?>
         <?php foreach ($report->warnings as $warning) : ?>
             <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($warning); ?></div>
         <?php endforeach; ?>
 
+        <div class="rc-tabs" data-rc-tabs>
+            <div class="rc-tabs__nav" role="tablist">
+                <button type="button" class="rc-tab" data-rc-tab="resume" role="tab" aria-selected="true"><?php esc_html_e('Résumé', 'rc-portal'); ?></button>
+                <button type="button" class="rc-tab" data-rc-tab="calibration" role="tab" aria-selected="false"><?php esc_html_e('Calibration', 'rc-portal'); ?></button>
+                <button type="button" class="rc-tab" data-rc-tab="bases-outils" role="tab" aria-selected="false"><?php esc_html_e('Bases & Outils', 'rc-portal'); ?></button>
+                <button type="button" class="rc-tab" data-rc-tab="signaux" role="tab" aria-selected="false"><?php esc_html_e('Signaux', 'rc-portal'); ?></button>
+                <button type="button" class="rc-tab" data-rc-tab="logs" role="tab" aria-selected="false"><?php esc_html_e('Logs', 'rc-portal'); ?></button>
+            </div>
+
+            <div class="rc-tabpanel" data-rc-tabpanel="resume" role="tabpanel">
+                <?php echo $this->renderResumeTab($report); ?>
+            </div>
+            <div class="rc-tabpanel" data-rc-tabpanel="calibration" role="tabpanel" hidden>
+                <?php echo $this->renderCalibrationTab($report); ?>
+            </div>
+            <div class="rc-tabpanel" data-rc-tabpanel="bases-outils" role="tabpanel" hidden>
+                <?php echo $this->renderBasesOutilsTab($report); ?>
+            </div>
+            <div class="rc-tabpanel" data-rc-tabpanel="signaux" role="tabpanel" hidden>
+                <?php echo $this->renderSignauxTab($report); ?>
+            </div>
+            <div class="rc-tabpanel" data-rc-tabpanel="logs" role="tabpanel" hidden>
+                <?php echo $this->renderLogsTab($report); ?>
+            </div>
+        </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    // -- Tab: Résumé -------------------------------------------------------
+
+    private function renderResumeTab(KukaArchiveReport $report): string
+    {
+        $archive = $report->archive;
+
+        ob_start();
+        ?>
         <div class="rc-card">
             <div class="rc-card__header"><h3><?php esc_html_e('Résumé de l’archive', 'rc-portal'); ?></h3></div>
             <div class="rc-field-grid">
                 <div class="rc-field">
                     <label><?php esc_html_e('Fichier', 'rc-portal'); ?></label>
                     <span><?php echo esc_html($report->sourceFileName); ?> (<?php echo esc_html(size_format($report->sourceSize)); ?>)</span>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Éléments dans l’archive', 'rc-portal'); ?></label>
-                    <span><?php echo esc_html((string) $report->entryCount); ?></span>
-                </div>
-                <div class="rc-field">
-                    <label><?php esc_html_e('Analysée le', 'rc-portal'); ?></label>
-                    <span><?php echo esc_html($this->formatDateTime($report->generatedAt)); ?></span>
                 </div>
                 <?php if ($archive !== null) : ?>
                     <div class="rc-field">
@@ -213,7 +250,7 @@ final class ToolsPages
                     <div class="rc-field">
                         <label><?php esc_html_e('Version de l’outil Archive Manager', 'rc-portal'); ?></label>
                         <span><?php echo esc_html($archive['toolVersion'] ?? '—'); ?></span>
-                        <p class="rc-field--help"><?php esc_html_e('Version de l’outil de sauvegarde lui-même — pas la version du logiciel robot (KSS), indiquée ci-dessous.', 'rc-portal'); ?></p>
+                        <p class="rc-field--help"><?php esc_html_e('Version de l’outil de sauvegarde lui-même — pas la version du logiciel robot (KSS), indiquée dans le tableau ci-dessous.', 'rc-portal'); ?></p>
                     </div>
                 <?php endif; ?>
                 <div class="rc-field">
@@ -225,23 +262,21 @@ final class ToolsPages
 
         <?php if ($report->robots !== []) : ?>
             <div class="rc-card">
-                <div class="rc-card__header"><h3><?php esc_html_e('Robots', 'rc-portal'); ?></h3></div>
+                <div class="rc-card__header"><h3><?php echo esc_html(count($report->robots) > 1 ? __('Robots', 'rc-portal') : __('Robot', 'rc-portal')); ?></h3></div>
                 <div class="rc-table-wrap">
                     <table class="rc-table">
                         <thead>
                         <tr>
-                            <th><?php esc_html_e('Axe', 'rc-portal'); ?></th>
                             <th><?php esc_html_e('Modèle', 'rc-portal'); ?></th>
-                            <th><?php esc_html_e('Nb. d’axes', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Numéro de série', 'rc-portal'); ?></th>
                             <th><?php esc_html_e('Version KSS', 'rc-portal'); ?></th>
                         </tr>
                         </thead>
                         <tbody>
                         <?php foreach ($report->robots as $robot) : ?>
                             <tr>
-                                <td><span class="rc-badge"><?php echo esc_html($robot['axis']); ?></span></td>
                                 <td><?php echo esc_html($robot['modelName'] ?? '—'); ?></td>
-                                <td><?php echo esc_html($robot['numAxes'] !== null ? (string) $robot['numAxes'] : '—'); ?></td>
+                                <td><?php echo esc_html($robot['serialNumber'] ?? '—'); ?></td>
                                 <td><?php echo esc_html($robot['madaVersion'] ?? $robot['robcorVersion'] ?? '—'); ?></td>
                             </tr>
                         <?php endforeach; ?>
@@ -251,53 +286,53 @@ final class ToolsPages
             </div>
         <?php endif; ?>
 
-        <?php if ($report->calibrations !== []) : ?>
+        <?php if ($report->techPacks !== []) : ?>
             <div class="rc-card">
-                <div class="rc-card__header"><h3><?php esc_html_e('Calibration', 'rc-portal'); ?></h3></div>
-                <?php foreach ($report->calibrations as $calibration) : ?>
-                    <p>
-                        <strong><?php echo esc_html(sprintf(
-                            /* translators: %s: robot serial number */
-                            __('N° de série %s', 'rc-portal'),
-                            $calibration['serialNumber']
-                        )); ?></strong>
-                        <?php if ($calibration['hasDrift']) : ?>
-                            <span class="rc-badge rc-badge--accent"><?php esc_html_e('Écarts non nuls — à vérifier', 'rc-portal'); ?></span>
-                        <?php else : ?>
-                            <span class="rc-badge rc-badge--success"><?php esc_html_e('Aucun écart', 'rc-portal'); ?></span>
-                        <?php endif; ?>
-                    </p>
-                    <div class="rc-table-wrap">
-                        <table class="rc-table">
-                            <thead>
+                <div class="rc-card__header"><h3><?php esc_html_e('Options installées', 'rc-portal'); ?></h3></div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Option', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Version', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->techPacks as $techPack) : ?>
                             <tr>
-                                <th><?php esc_html_e('Axe', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Valeur codeur initiale', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Écart de calibration', 'rc-portal'); ?></th>
+                                <td><?php echo esc_html($techPack['name']); ?></td>
+                                <td><?php echo esc_html($techPack['version']); ?></td>
                             </tr>
-                            </thead>
-                            <tbody>
-                            <?php
-                            $axes = array_unique(array_merge(
-                                array_keys($calibration['firstEncoderValues']),
-                                array_keys($calibration['calibrationDifferences'])
-                            ));
-                            sort($axes);
-                            ?>
-                            <?php foreach ($axes as $axis) : ?>
-                                <tr>
-                                    <td><?php echo esc_html((string) $axis); ?></td>
-                                    <td><?php echo esc_html(isset($calibration['firstEncoderValues'][$axis]) ? (string) $calibration['firstEncoderValues'][$axis] : '—'); ?></td>
-                                    <td><?php echo esc_html(isset($calibration['calibrationDifferences'][$axis]) ? (string) $calibration['calibrationDifferences'][$axis] : '—'); ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                <?php endforeach; ?>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         <?php endif; ?>
 
+        <?php if ($report->programs !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header"><h3><?php esc_html_e('Programmes utilisateur', 'rc-portal'); ?></h3></div>
+                <div class="rc-field-grid">
+                    <?php foreach ($report->programs as $group) : ?>
+                        <div class="rc-field">
+                            <label><?php echo esc_html($group['robot']); ?></label>
+                            <span><?php echo esc_html(implode(', ', $group['programs'])); ?></span>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endif; ?>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    // -- Tab: Calibration (mastering + xHome + .cal) ------------------------
+
+    private function renderCalibrationTab(KukaArchiveReport $report): string
+    {
+        ob_start();
+        ?>
         <?php if ($report->masteringEvents !== []) : ?>
             <div class="rc-card">
                 <div class="rc-card__header"><h3><?php esc_html_e('Historique de mastering', 'rc-portal'); ?></h3></div>
@@ -338,6 +373,328 @@ final class ToolsPages
             </div>
         <?php endif; ?>
 
+        <?php if ($report->homePositions !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header"><h3><?php esc_html_e('Positions de référence (xHome)', 'rc-portal'); ?></h3></div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Position', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Axes', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->homePositions as $name => $axes) : ?>
+                            <tr>
+                                <td><span class="rc-badge"><?php echo esc_html((string) $name); ?></span></td>
+                                <td><?php echo esc_html($this->formatPairs($axes)); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->calibrations !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header"><h3><?php esc_html_e('Calibration', 'rc-portal'); ?></h3></div>
+                <?php foreach ($report->calibrations as $calibration) : ?>
+                    <p>
+                        <?php if ($calibration['hasDrift']) : ?>
+                            <span class="rc-badge rc-badge--accent"><?php esc_html_e('Écarts non nuls — à vérifier', 'rc-portal'); ?></span>
+                        <?php else : ?>
+                            <span class="rc-badge rc-badge--success"><?php esc_html_e('Aucun écart', 'rc-portal'); ?></span>
+                        <?php endif; ?>
+                    </p>
+                    <div class="rc-table-wrap">
+                        <table class="rc-table">
+                            <thead>
+                            <tr>
+                                <th><?php esc_html_e('Axe', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Valeur codeur initiale', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Écart de calibration', 'rc-portal'); ?></th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <?php
+                            $axes = array_unique(array_merge(
+                                array_keys($calibration['firstEncoderValues']),
+                                array_keys($calibration['calibrationDifferences'])
+                            ));
+                            sort($axes);
+                            ?>
+                            <?php foreach ($axes as $axis) : ?>
+                                <tr>
+                                    <td><?php echo esc_html((string) $axis); ?></td>
+                                    <td><?php echo esc_html(isset($calibration['firstEncoderValues'][$axis]) ? (string) $calibration['firstEncoderValues'][$axis] : '—'); ?></td>
+                                    <td><?php echo esc_html(isset($calibration['calibrationDifferences'][$axis]) ? (string) $calibration['calibrationDifferences'][$axis] : '—'); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->masteringEvents === [] && $report->homePositions === [] && $report->calibrations === []) : ?>
+            <div class="rc-empty">
+                <strong><?php esc_html_e('Aucune donnée de calibration détectée', 'rc-portal'); ?></strong>
+            </div>
+        <?php endif; ?>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    // -- Tab: Bases & Outils (bases, tools, loads, additional loads, workspaces) --
+
+    private function renderBasesOutilsTab(KukaArchiveReport $report): string
+    {
+        ob_start();
+        ?>
+        <?php if ($report->bases['items'] !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header">
+                    <h3><?php echo esc_html(sprintf(
+                        /* translators: 1: configured count, 2: total declared slots */
+                        __('Bases (%1$d/%2$d configurées)', 'rc-portal'),
+                        count($report->bases['items']),
+                        $report->bases['total']
+                    )); ?></h3>
+                </div>
+                <?php echo $this->renderFrameTable($report->bases['items']); ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->tools['items'] !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header">
+                    <h3><?php echo esc_html(sprintf(
+                        __('Outils (%1$d/%2$d configurés)', 'rc-portal'),
+                        count($report->tools['items']),
+                        $report->tools['total']
+                    )); ?></h3>
+                </div>
+                <?php echo $this->renderFrameTable($report->tools['items']); ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->loads['items'] !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header">
+                    <h3><?php echo esc_html(sprintf(
+                        __('Charges (%1$d/%2$d configurées)', 'rc-portal'),
+                        count($report->loads['items']),
+                        $report->loads['total']
+                    )); ?></h3>
+                </div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Index', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Masse (kg)', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Centre de masse', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Inertie', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->loads['items'] as $load) : ?>
+                            <tr>
+                                <td><?php echo esc_html((string) $load['index']); ?></td>
+                                <td><?php echo esc_html((string) $load['mass']); ?></td>
+                                <td><?php echo esc_html($this->formatPairs($load['centerOfMass'])); ?></td>
+                                <td><?php echo esc_html($this->formatPairs($load['inertia'])); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->additionalLoads !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header"><h3><?php esc_html_e('Charges additionnelles', 'rc-portal'); ?></h3></div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Axe', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Masse (kg)', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Centre de masse', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Inertie', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->additionalLoads as $load) : ?>
+                            <tr>
+                                <td><?php echo esc_html('A' . $load['axis']); ?></td>
+                                <td><?php echo esc_html((string) $load['mass']); ?></td>
+                                <td><?php echo esc_html($this->formatPairs($load['centerOfMass'])); ?></td>
+                                <td><?php echo esc_html($this->formatPairs($load['inertia'])); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->workspaces['items'] !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header">
+                    <h3><?php echo esc_html(sprintf(
+                        /* translators: 1: active count, 2: total declared envelopes */
+                        __('Enveloppes (%1$d/%2$d actives)', 'rc-portal'),
+                        count($report->workspaces['items']),
+                        $report->workspaces['total']
+                    )); ?></h3>
+                </div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Index', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Nom', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Mode', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Paramètres', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->workspaces['items'] as $workspace) : ?>
+                            <tr>
+                                <td><?php echo esc_html((string) $workspace['index']); ?></td>
+                                <td><?php echo esc_html($workspace['name'] ?? '—'); ?></td>
+                                <td><span class="rc-badge"><?php echo esc_html((string) $workspace['mode']); ?></span></td>
+                                <td><?php echo esc_html($this->formatPairs($workspace['params'], ['MODE'])); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($report->bases['items'] === [] && $report->tools['items'] === [] && $report->loads['items'] === [] && $report->additionalLoads === [] && $report->workspaces['items'] === []) : ?>
+            <div class="rc-empty">
+                <strong><?php esc_html_e('Aucune base, outil, charge ou enveloppe configuré n’a été détecté', 'rc-portal'); ?></strong>
+            </div>
+        <?php endif; ?>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    /**
+     * @param array<int,array{index:int,name:?string,frame:array<string,string>}> $items
+     */
+    private function renderFrameTable(array $items): string
+    {
+        ob_start();
+        ?>
+        <div class="rc-table-wrap">
+            <table class="rc-table">
+                <thead>
+                <tr>
+                    <th><?php esc_html_e('Index', 'rc-portal'); ?></th>
+                    <th><?php esc_html_e('Nom', 'rc-portal'); ?></th>
+                    <th><?php esc_html_e('Position', 'rc-portal'); ?></th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($items as $item) : ?>
+                    <tr>
+                        <td><?php echo esc_html((string) $item['index']); ?></td>
+                        <td><?php echo esc_html($item['name'] ?? '—'); ?></td>
+                        <td><?php echo esc_html($this->formatPairs($item['frame'])); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    /**
+     * Joins a `key=>value` struct map into a compact one-line summary
+     * (`"X 1003.26 · Y -309.48 · ..."`), in the order the values were
+     * parsed (matching the source file's own field order).
+     *
+     * @param array<string,string> $pairs
+     * @param array<int,string> $exclude keys to leave out (e.g. `MODE`, shown separately)
+     */
+    private function formatPairs(array $pairs, array $exclude = []): string
+    {
+        $parts = [];
+        foreach ($pairs as $key => $value) {
+            if (in_array($key, $exclude, true)) {
+                continue;
+            }
+            $parts[] = $key . ' ' . $value;
+        }
+
+        return implode(' · ', $parts);
+    }
+
+    // -- Tab: Signaux --------------------------------------------------------
+
+    private function renderSignauxTab(KukaArchiveReport $report): string
+    {
+        ob_start();
+        ?>
+        <?php if ($report->signals !== []) : ?>
+            <div class="rc-card">
+                <div class="rc-card__header">
+                    <h3><?php echo esc_html(sprintf(
+                        /* translators: %d: number of declared signals */
+                        __('Signaux déclarés (%d)', 'rc-portal'),
+                        count($report->signals)
+                    )); ?></h3>
+                </div>
+                <div class="rc-table-wrap">
+                    <table class="rc-table">
+                        <thead>
+                        <tr>
+                            <th><?php esc_html_e('Nom', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Cible', 'rc-portal'); ?></th>
+                            <th><?php esc_html_e('Commentaire', 'rc-portal'); ?></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($report->signals as $signal) : ?>
+                            <tr>
+                                <td><?php echo esc_html($signal['name']); ?></td>
+                                <td>
+                                    <?php echo esc_html($signal['target']); ?>
+                                    <?php if ($signal['targetTo'] !== null) : ?>
+                                        <?php echo esc_html(' → ' . $signal['targetTo']); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?php echo esc_html($signal['comment'] ?? ''); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php else : ?>
+            <div class="rc-empty">
+                <strong><?php esc_html_e('Aucun signal détecté', 'rc-portal'); ?></strong>
+            </div>
+        <?php endif; ?>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    // -- Tab: Logs (text logs + message-log databases) ------------------------
+
+    private function renderLogsTab(KukaArchiveReport $report): string
+    {
+        ob_start();
+        ?>
         <?php if ($report->warmStartErrors !== []) : ?>
             <div class="rc-card">
                 <div class="rc-card__header"><h3><?php esc_html_e('Erreurs de démarrage à chaud', 'rc-portal'); ?></h3></div>
@@ -424,46 +781,105 @@ final class ToolsPages
             </div>
         <?php endif; ?>
 
-        <?php if ($report->programs !== []) : ?>
-            <div class="rc-card">
-                <div class="rc-card__header"><h3><?php esc_html_e('Programmes utilisateur', 'rc-portal'); ?></h3></div>
-                <div class="rc-field-grid">
-                    <?php foreach ($report->programs as $group) : ?>
-                        <div class="rc-field">
-                            <label><?php echo esc_html($group['robot']); ?></label>
-                            <span><?php echo esc_html(implode(', ', $group['programs'])); ?></span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endif; ?>
+        <?php echo $this->renderMessageLogs($report); ?>
+        <?php
+        return (string) ob_get_clean();
+    }
 
-        <?php if ($report->unparsedDatabases !== []) : ?>
-            <div class="rc-card">
-                <div class="rc-card__header"><h3><?php esc_html_e('Journaux détaillés non analysés', 'rc-portal'); ?></h3></div>
-                <p class="rc-field--help"><?php esc_html_e('Ces fichiers sont des bases de données Microsoft Access/Jet utilisées par KUKA pour l’historique détaillé des messages système. Leur lecture complète nécessite un composant généralement indisponible sur un hébergement web mutualisé ; cette première version se limite donc à les repérer et à en lister les propriétés, sans en extraire le contenu. Une prochaine itération pourra aller plus loin.', 'rc-portal'); ?></p>
-                <div class="rc-table-wrap">
-                    <table class="rc-table">
-                        <thead>
-                        <tr>
-                            <th><?php esc_html_e('Fichier', 'rc-portal'); ?></th>
-                            <th><?php esc_html_e('Taille', 'rc-portal'); ?></th>
-                            <th><?php esc_html_e('Dernière modification', 'rc-portal'); ?></th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ($report->unparsedDatabases as $database) : ?>
-                            <tr>
-                                <td><?php echo esc_html($database['fileName']); ?></td>
-                                <td><?php echo esc_html(size_format($database['size'])); ?></td>
-                                <td><?php echo esc_html($this->formatDateTime($database['lastModified'])); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
+    private function renderMessageLogs(KukaArchiveReport $report): string
+    {
+        $messageLogs = $report->messageLogs;
+        if ($messageLogs['databases'] === []) {
+            return '';
+        }
+
+        ob_start();
+        ?>
+        <div class="rc-card">
+            <div class="rc-card__header"><h3><?php esc_html_e('Journaux de messages', 'rc-portal'); ?></h3></div>
+
+            <?php if (! $messageLogs['available']) : ?>
+                <p class="rc-field--help"><?php esc_html_e('Ces fichiers sont des bases de données Microsoft Access/Jet utilisées par KUKA pour l’historique détaillé des messages système. Ce serveur ne dispose pas du composant nécessaire pour les lire (mdbtools) — souvent absent d’un hébergement web mutualisé — cette analyse se limite donc à les repérer et à en lister les propriétés. Sur un serveur qui dispose de ce composant, la même analyse en lit aussi le contenu.', 'rc-portal'); ?></p>
+            <?php endif; ?>
+
+            <?php foreach ($messageLogs['databases'] as $database) : ?>
+                <div class="rc-card__header">
+                    <h3>
+                        <?php echo esc_html($database['fileName']); ?>
+                        (<?php echo esc_html(size_format($database['size'])); ?>,
+                        <?php echo esc_html($this->formatDateTime($database['lastModified'])); ?>)
+                    </h3>
                 </div>
-            </div>
-        <?php endif; ?>
+
+                <?php if ($database['error'] !== null) : ?>
+                    <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($database['error']); ?></div>
+                <?php elseif (! $database['parsed']) : ?>
+                    <p class="rc-field--help"><?php esc_html_e('Détectée mais non analysée (voir note ci-dessus).', 'rc-portal'); ?></p>
+                <?php elseif ($database['entries'] === []) : ?>
+                    <p class="rc-field--help"><?php esc_html_e('Aucun message dans les tables de journal connues de ce fichier.', 'rc-portal'); ?></p>
+                <?php else : ?>
+                    <?php if ($database['header'] !== null) : ?>
+                        <div class="rc-field-grid">
+                            <?php foreach ($database['header'] as $key => $value) : ?>
+                                <?php if (trim($value) === '') continue; ?>
+                                <div class="rc-field">
+                                    <label><?php echo esc_html($key); ?></label>
+                                    <span><?php echo esc_html($value); ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    <?php
+                    $totalEntries = count($database['entries']);
+                    $displayEntries = $database['entries'];
+                    usort($displayEntries, static fn (array $a, array $b): int => ($b['date']?->getTimestamp() ?? 0) <=> ($a['date']?->getTimestamp() ?? 0));
+                    $displayEntries = array_slice($displayEntries, 0, self::MAX_LOG_ROWS_DISPLAYED);
+                    ?>
+                    <p class="rc-field--help">
+                        <?php if ($totalEntries > self::MAX_LOG_ROWS_DISPLAYED) : ?>
+                            <?php echo esc_html(sprintf(
+                                /* translators: 1: number of rows shown, 2: total number of rows found */
+                                __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                                count($displayEntries),
+                                $totalEntries
+                            )); ?>
+                        <?php else : ?>
+                            <?php echo esc_html(sprintf(
+                                /* translators: %d: number of message-log rows found */
+                                __('%d messages, du plus récent au plus ancien (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                                $totalEntries
+                            )); ?>
+                        <?php endif; ?>
+                    </p>
+                    <div class="rc-table-wrap">
+                        <table class="rc-table">
+                            <thead>
+                            <tr>
+                                <th><?php esc_html_e('Date', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Catégorie', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Niveau', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Source', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Code', 'rc-portal'); ?></th>
+                                <th><?php esc_html_e('Clé', 'rc-portal'); ?></th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <?php foreach ($displayEntries as $entry) : ?>
+                                <tr>
+                                    <td><?php echo esc_html($this->formatDateTime($entry['date'])); ?></td>
+                                    <td><?php echo esc_html($entry['category']); ?></td>
+                                    <td><?php echo esc_html($entry['level'] ?? '—'); ?></td>
+                                    <td><?php echo esc_html($entry['source'] ?? '—'); ?></td>
+                                    <td><?php echo esc_html($entry['messageCode'] ?? '—'); ?></td>
+                                    <td><?php echo esc_html($entry['key'] ?? '—'); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            <?php endforeach; ?>
+        </div>
         <?php
         return (string) ob_get_clean();
     }

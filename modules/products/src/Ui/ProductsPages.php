@@ -315,12 +315,12 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-products-catalogue">
-            <div class="rc-page-header">
+            <header class="rc-page-header">
                 <div>
                     <span class="rc-eyebrow"><?php esc_html_e('Axonaut', 'rc-portal'); ?></span>
                     <h1><?php esc_html_e('Catalogue', 'rc-portal'); ?></h1>
                 </div>
-            </div>
+            </header>
 
             <?php if ($erpError !== null) : ?>
                 <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($erpError); ?></div>
@@ -472,12 +472,12 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-products-fiche">
-            <div class="rc-page-header">
+            <header class="rc-page-header">
                 <div>
                     <span class="rc-eyebrow"><?php echo esc_html(($erpProduct !== null && $erpProduct->productCode !== '') ? $erpProduct->productCode : ('Axonaut #' . $externalId)); ?></span>
                     <h1><?php echo esc_html($erpProduct !== null ? ($erpProduct->name !== '' ? $erpProduct->name : $externalId) : $externalId); ?></h1>
                 </div>
-            </div>
+            </header>
 
             <?php if ($saved) : ?><div class="rc-portal-alert rc-portal-alert--success"><?php esc_html_e('Fiche enregistrée.', 'rc-portal'); ?></div><?php endif; ?>
             <?php if ($warning !== null) : ?><div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($warning); ?></div><?php endif; ?>
@@ -738,12 +738,12 @@ final class ProductsPages
         ob_start();
         ?>
         <div class="rc-products-fiche">
-            <div class="rc-page-header">
+            <header class="rc-page-header">
                 <div>
                     <span class="rc-eyebrow"><?php echo esc_html($sku); ?></span>
                     <h1><?php echo esc_html($title); ?></h1>
                 </div>
-            </div>
+            </header>
 
             <?php if ($saved) : ?><div class="rc-portal-alert rc-portal-alert--success"><?php esc_html_e('Fiche enregistrée.', 'rc-portal'); ?></div><?php endif; ?>
             <?php if ($error !== null) : ?><div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($error); ?></div><?php endif; ?>
