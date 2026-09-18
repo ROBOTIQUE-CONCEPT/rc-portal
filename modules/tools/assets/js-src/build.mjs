@@ -1,7 +1,8 @@
-// Bundles kuka-mdb.js (+ mdb-reader and its browser polyfills) into the
-// single file ToolsPages enqueues: ../js/kuka-mdb.bundle.js.
+// Bundles message-logs.js (+ mdb-reader and its browser polyfills — the
+// .evt parser needs no library at all, see that file) into the single file
+// ToolsPages enqueues: ../js/message-logs.bundle.js.
 //
-// Run after editing kuka-mdb.js:
+// Run after editing message-logs.js:
 //   npm install
 //   npm run build
 
@@ -9,15 +10,15 @@ import * as esbuild from "esbuild";
 import { polyfillNode } from "esbuild-plugin-polyfill-node";
 
 await esbuild.build({
-    entryPoints: ["kuka-mdb.js"],
+    entryPoints: ["message-logs.js"],
     bundle: true,
     platform: "browser",
     format: "iife",
     target: ["es2021"],
-    outfile: "../js/kuka-mdb.bundle.js",
+    outfile: "../js/message-logs.bundle.js",
     plugins: [polyfillNode({})],
     minify: true,
     legalComments: "none",
 });
 
-console.log("Built ../js/kuka-mdb.bundle.js");
+console.log("Built ../js/message-logs.bundle.js");

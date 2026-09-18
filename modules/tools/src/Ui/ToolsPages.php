@@ -77,7 +77,7 @@ final class ToolsPages
         }
 
         if ($report !== null && $report->messageLogs['databases'] !== []) {
-            $this->enqueueKukaMdbAssets();
+            $this->enqueueMessageLogAssets();
         }
 
         ob_start();
@@ -189,15 +189,17 @@ final class ToolsPages
     }
 
     /**
-     * Loads the bundled `mdb-reader` JS library (see
-     * assets/js-src/kuka-mdb.js) — only on this page, and only when the
-     * archive actually contains a message-log database for it to read.
+     * Loads the bundled message-log reader JS (see
+     * assets/js-src/message-logs.js — `mdb-reader` for the Jet/Access
+     * format, a hand-written parser for the classic Windows Event Log one)
+     * — only on this page, and only when the archive actually contains a
+     * message-log file for it to read.
      */
-    private function enqueueKukaMdbAssets(): void
+    private function enqueueMessageLogAssets(): void
     {
         wp_enqueue_script(
-            'rc-tools-kuka-mdb',
-            plugins_url('modules/tools/assets/js/kuka-mdb.bundle.js', RC_PORTAL_FILE),
+            'rc-tools-message-log',
+            plugins_url('modules/tools/assets/js/message-logs.bundle.js', RC_PORTAL_FILE),
             [],
             RC_PORTAL_VERSION,
             true
@@ -809,15 +811,23 @@ final class ToolsPages
     }
 
     /**
-     * Renders one placeholder card per detected message-log database — the
-     * bundled `mdb-reader` JS (assets/js-src/kuka-mdb.js, enqueued by
-     * enqueueKukaMdbAssets()) reads each one's embedded base64 bytes
-     * directly in the browser, posts the raw rows to MessageLogAjaxHandler,
-     * and replaces this placeholder's `.rc-kuka-mdb__body` with the
-     * returned HTML (renderMessageLogDatabaseCard()). See this tool's
-     * "no persistence" note in ToolsModule's docblock: the base64 blob
-     * below only ever exists in this response and the browser's own page
-     * memory, never written to disk again on either side.
+     * Renders one placeholder card per detected message-log file — the
+     * bundled reader JS (assets/js-src/message-logs.js, enqueued by
+     * enqueueMessageLogAssets()) reads each one's embedded base64 bytes
+     * directly in the browser (`mdb-reader` for `format: "jet"`, a
+     * hand-written parser for `format: "evt"`), posts the raw rows/records
+     * to MessageLogAjaxHandler, and replaces this placeholder's
+     * `.rc-message-log__body` with the returned HTML
+     * (renderMessageLogDatabaseCard()). See this tool's "no persistence"
+     * note in ToolsModule's docblock: the base64 blob below only ever
+     * exists in this response and the browser's own page memory, never
+     * written to disk again on either side.
+     *
+     * For `evt` files, the category (derived from the file name — see
+     * MessageLogProcessor::evtCategoryFromFileName()) is computed once
+     * here and passed through via `data-category`, since the AJAX response
+     * doesn't re-send the file name and the filename→category mapping
+     * should live in exactly one place.
      */
     private function renderMessageLogs(KukaArchiveReport $report): string
     {
@@ -834,10 +844,10 @@ final class ToolsPages
 
         ob_start();
         ?>
-        <script type="application/json" id="rc-tools-kuka-mdb-config"><?php echo wp_json_encode($config); ?></script>
+        <script type="application/json" id="rc-tools-message-log-config"><?php echo wp_json_encode($config); ?></script>
 
         <?php foreach ($messageLogs['databases'] as $database) : ?>
-            <div class="rc-card" data-rc-kuka-mdb>
+            <div class="rc-card" data-rc-message-log>
                 <div class="rc-card__header">
                     <h3>
                         <?php echo esc_html($database['fileName']); ?>
@@ -845,15 +855,17 @@ final class ToolsPages
                         <?php echo esc_html($this->formatDateTime($database['lastModified'])); ?>)
                     </h3>
                 </div>
-                <div class="rc-kuka-mdb__body">
+                <div class="rc-message-log__body">
                     <p class="rc-field--help"><?php esc_html_e('Analyse en cours dans le navigateur…', 'rc-portal'); ?></p>
                 </div>
                 <script
                     type="text/plain"
-                    class="rc-kuka-mdb__data"
+                    class="rc-message-log__data"
                     data-filename="<?php echo esc_attr($database['fileName']); ?>"
                     data-size="<?php echo esc_attr((string) $database['size']); ?>"
                     data-lastmodified="<?php echo esc_attr($database['lastModified'] !== null ? (string) $database['lastModified']->getTimestamp() : '0'); ?>"
+                    data-format="<?php echo esc_attr($database['format']); ?>"
+                    data-category="<?php echo esc_attr($database['format'] === 'evt' ? MessageLogProcessor::evtCategoryFromFileName($database['fileName']) : ''); ?>"
                 ><?php echo esc_html($database['dataBase64']); ?></script>
             </div>
         <?php endforeach; ?>
@@ -867,7 +879,7 @@ final class ToolsPages
      * already extracted and MessageLogProcessor already shaped. Public:
      * called from MessageLogAjaxHandler once a browser posts back the rows
      * it read client-side (see renderMessageLogs() for the placeholder
-     * whose `.rc-kuka-mdb__body` this replaces).
+     * whose `.rc-message-log__body` this replaces).
      *
      * @param array{header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>,error:?string} $database
      */

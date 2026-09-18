@@ -1,8 +1,8 @@
 {
-  "name": "rc-tools-kuka-mdb",
+  "name": "rc-tools-message-log",
   "private": true,
   "version": "1.0.0",
-  "description": "Build-only project: bundles mdb-reader + kuka-mdb.js into the single browser-ready file the KUKA archive analyzer tool enqueues (../js/kuka-mdb.bundle.js). Not part of the WordPress runtime — only needed to rebuild the bundle after editing kuka-mdb.js.",
+  "description": "Build-only project: bundles mdb-reader + message-logs.js into the single browser-ready file the KUKA archive analyzer tool enqueues (../js/message-logs.bundle.js). Not part of the WordPress runtime — only needed to rebuild the bundle after editing message-logs.js.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs"

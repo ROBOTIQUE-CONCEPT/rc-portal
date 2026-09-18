@@ -9,11 +9,11 @@ use RC\Portal\Modules\Tools\Ui\ToolsPages;
 defined('ABSPATH') || exit;
 
 /**
- * WordPress AJAX endpoint consuming the raw table rows a browser extracted
- * client-side (via the `mdb-reader` JS library, see
- * assets/js-src/kuka-mdb.js) from one KUKA message-log Jet/Access database,
- * and returning the rendered HTML fragment for that database's card
- * (Ui\ToolsPages::renderMessageLogDatabaseCard()).
+ * WordPress AJAX endpoint consuming the raw rows/records a browser
+ * extracted client-side (see assets/js-src/message-logs.js) from one KUKA
+ * message-log file — a Jet/Access database (`format: "jet"`) or a classic
+ * Windows Event Log file (`format: "evt"`) — and returning the rendered
+ * HTML fragment for that file's card (Ui\ToolsPages::renderMessageLogDatabaseCard()).
  *
  * Nothing here is written to disk or persisted anywhere: the JSON request
  * body is processed and discarded once the response is sent, exactly like
@@ -22,8 +22,8 @@ defined('ABSPATH') || exit;
  */
 final class MessageLogAjaxHandler
 {
-    public const ACTION = 'rc_tools_kuka_mdb_parse';
-    public const NONCE_ACTION = 'rc_tools_kuka_mdb_parse';
+    public const ACTION = 'rc_tools_message_log_parse';
+    public const NONCE_ACTION = 'rc_tools_message_log_parse';
 
     public static function register(): void
     {
@@ -53,26 +53,47 @@ final class MessageLogAjaxHandler
         // already rendered server-side in the placeholder this response
         // replaces the *body* of — see ToolsPages::renderMessageLogs() and
         // renderMessageLogDatabaseCard().
-        $headerRows = isset($payload['header']) && is_array($payload['header']) ? $payload['header'] : [];
-        $header = $headerRows !== [] ? MessageLogProcessor::processHeader($headerRows) : null;
+        $format = isset($payload['format']) && $payload['format'] === 'evt' ? 'evt' : 'jet';
 
-        $tablesPayload = isset($payload['tables']) && is_array($payload['tables']) ? $payload['tables'] : [];
+        if ($format === 'evt') {
+            $category = isset($payload['category']) ? sanitize_text_field((string) $payload['category']) : '';
+            $records = isset($payload['records']) && is_array($payload['records']) ? $payload['records'] : [];
 
-        $entries = [];
-        foreach (MessageLogProcessor::LOG_TABLES as $table) {
-            if (! isset($tablesPayload[$table]) || ! is_array($tablesPayload[$table])) {
-                continue;
+            $entries = [];
+            foreach ($records as $record) {
+                if (! is_array($record)) {
+                    continue;
+                }
+                $entries[] = MessageLogProcessor::processEvtRecord($record, $category);
             }
-            foreach (MessageLogProcessor::processLogTable($tablesPayload[$table], $table) as $row) {
-                $entries[] = $row;
+
+            $database = [
+                'header' => null,
+                'entries' => $entries,
+                'error' => null,
+            ];
+        } else {
+            $headerRows = isset($payload['header']) && is_array($payload['header']) ? $payload['header'] : [];
+            $header = $headerRows !== [] ? MessageLogProcessor::processHeader($headerRows) : null;
+
+            $tablesPayload = isset($payload['tables']) && is_array($payload['tables']) ? $payload['tables'] : [];
+
+            $entries = [];
+            foreach (MessageLogProcessor::LOG_TABLES as $table) {
+                if (! isset($tablesPayload[$table]) || ! is_array($tablesPayload[$table])) {
+                    continue;
+                }
+                foreach (MessageLogProcessor::processLogTable($tablesPayload[$table], $table) as $row) {
+                    $entries[] = $row;
+                }
             }
+
+            $database = [
+                'header' => $header,
+                'entries' => $entries,
+                'error' => null,
+            ];
         }
-
-        $database = [
-            'header' => $header,
-            'entries' => $entries,
-            'error' => null,
-        ];
 
         $html = (new ToolsPages())->renderMessageLogDatabaseCard($database);
 

@@ -18,23 +18,31 @@ defined('ABSPATH') || exit;
  * archive is read via `ZipArchive`'s in-memory API only (`getFromName()`/
  * `getStream()`, never `extractTo()`).
  *
- * Message-log databases (`KukaLog.mdb` and its `.bkp`/`.tmp` siblings) are
- * genuine Microsoft Jet/Access databases. This class only detects them and
+ * Two message-log file formats are detected — `KukaLog.mdb` and its
+ * `.bkp`/`.tmp` siblings (genuine Microsoft Jet/Access databases), and, in
+ * some archives, classic Windows Event Log files under a `Log Files`
+ * folder (`KrcLog*.evt` — the same binary format Windows 2000/XP/2003
+ * itself used, unrelated to the later XML-based .evtx). Both are detected
+ * by sniffing each candidate entry's own header signature rather than
+ * trusting its extension or location. This class only detects them and
  * extracts their raw bytes (base64-encoded, into KukaArchiveReport's
- * `messageLogs`); actually reading their tables happens client-side, in the
- * browser, via the `mdb-reader` JS library (see
- * assets/js-src/kuka-mdb.js and Ui\ToolsPages::renderMessageLogs()) — a
- * pure-JS Jet/Access reader with no server-side dependency. An earlier
- * version of this class shelled out to the `mdbtools` command-line utility
- * when present on the server, but that binary is absent on most shared
- * hosting; reading in the browser works identically everywhere, and every
- * visitor's own browser does the (lightweight, per-file) parsing work
- * instead of the server.
+ * `messageLogs`, tagged with a `format` of `jet` or `evt`); actually
+ * reading them happens client-side, in the browser (see
+ * assets/js-src/message-logs.js and Ui\ToolsPages::renderMessageLogs()) —
+ * `mdb-reader` (a pure-JS Jet/Access reader) for the `jet` format, a small
+ * hand-written binary reader for the well-documented, stable `evt` one —
+ * neither needs any server-side dependency. An earlier version of this
+ * class shelled out to the `mdbtools` command-line utility for the Jet/
+ * Access format when present on the server, but that binary is absent on
+ * most shared hosting; reading in the browser works identically
+ * everywhere, and every visitor's own browser does the (lightweight,
+ * per-file) parsing work instead of the server.
  *
- * See KukaArchive\MessageLogProcessor for what happens to the raw rows a
- * browser posts back (including the empirically reverse-engineered
- * `LogLowDateTime`/`LogHighDateTime` timestamp conversion) and
- * KukaArchive\MessageLogAjaxHandler for the endpoint that receives them.
+ * See KukaArchive\MessageLogProcessor for what happens to the raw rows/
+ * records a browser posts back (including the empirically reverse-
+ * engineered `LogLowDateTime`/`LogHighDateTime` timestamp conversion for
+ * the `jet` format) and KukaArchive\MessageLogAjaxHandler for the endpoint
+ * that receives them.
  */
 final class KukaArchiveAnalyzer
 {
@@ -46,6 +54,9 @@ final class KukaArchiveAnalyzer
 
     /** Extensions worth header-sniffing for a Jet/Access signature (message-log databases). */
     private const JET_CANDIDATE_EXTENSIONS = ['mdb', 'bkp', 'tmp'];
+
+    /** Extension worth header-sniffing for a classic Windows Event Log signature. */
+    private const EVT_CANDIDATE_EXTENSION = 'evt';
 
     public static function analyze(string $zipPath, string $originalFileName, int $sourceSize): KukaArchiveReport
     {
@@ -850,15 +861,15 @@ final class KukaArchiveAnalyzer
         return $programs;
     }
 
-    // -- Message-log databases (Jet/Access) -------------------------------
+    // -- Message-log files (Jet/Access + classic Windows Event Log) ------
 
     /**
-     * Detects Jet/Access message-log databases in the archive and extracts
-     * their raw bytes, base64-encoded, for the browser to read directly
-     * (see this class's docblock). Nothing here parses the database format
-     * itself — that never happens server-side.
+     * Detects message-log files in the archive — either format (see this
+     * class's docblock) — and extracts their raw bytes, base64-encoded,
+     * for the browser to read directly. Nothing here parses either file
+     * format itself; that never happens server-side.
      *
-     * @return array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string}>}
+     * @return array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string,format:string}>}
      */
     private static function parseMessageLogs(\ZipArchive $zip, array $entries): array
     {
@@ -866,10 +877,12 @@ final class KukaArchiveAnalyzer
 
         foreach ($entries as $entry) {
             $extension = strtolower((string) pathinfo($entry, PATHINFO_EXTENSION));
-            if (! in_array($extension, self::JET_CANDIDATE_EXTENSIONS, true)) {
-                continue;
-            }
-            if (! self::looksLikeJetDatabase($zip, $entry)) {
+
+            if (in_array($extension, self::JET_CANDIDATE_EXTENSIONS, true) && self::looksLikeJetDatabase($zip, $entry)) {
+                $format = 'jet';
+            } elseif ($extension === self::EVT_CANDIDATE_EXTENSION && self::looksLikeEvtLog($zip, $entry)) {
+                $format = 'evt';
+            } else {
                 continue;
             }
 
@@ -889,6 +902,7 @@ final class KukaArchiveAnalyzer
                 'size' => $stat !== false ? (int) $stat['size'] : strlen($bytes),
                 'lastModified' => $lastModified,
                 'dataBase64' => base64_encode($bytes),
+                'format' => $format,
             ];
         }
 
@@ -914,6 +928,31 @@ final class KukaArchiveAnalyzer
         $signature = substr($header, 4, 15);
 
         return str_starts_with($signature, 'Standard Jet') || str_starts_with($signature, 'Standard ACE');
+    }
+
+    /**
+     * Classic Windows Event Log (.evt, Windows 2000/XP/2003 — unrelated to
+     * the later XML-based .evtx) files start with a 48-byte EVENTLOGHEADER
+     * whose bytes 4-7 are the fixed ASCII signature "LfLe" — the same
+     * magic every EVENTLOGRECORD also repeats at its own offset 4, per
+     * Microsoft's public MS-EVEN spec
+     * (learn.microsoft.com/en-us/openspecs/windows_protocols/ms-even).
+     */
+    private static function looksLikeEvtLog(\ZipArchive $zip, string $entry): bool
+    {
+        $stream = $zip->getStream($entry);
+        if ($stream === false) {
+            return false;
+        }
+
+        $header = fread($stream, 8);
+        fclose($stream);
+
+        if ($header === false || strlen($header) < 8) {
+            return false;
+        }
+
+        return substr($header, 4, 4) === 'LfLe';
     }
 
     // -- Zip / text helpers ----------------------------------------------

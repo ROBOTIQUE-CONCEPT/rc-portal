@@ -41,7 +41,7 @@ final class KukaArchiveReport
      * @param array<int,array{task:?string,errorCode:?string,mode:?string,robotModel:?string,serialNumber:?string,count:int,firstDate:?\DateTimeImmutable,lastDate:?\DateTimeImmutable}> $fatalErrors grouped tt.log entries
      * @param array<int,array{fileName:string,timestamp:?\DateTimeImmutable}> $debugDumps
      * @param array<int,array{robot:string,programs:array<int,string>}> $programs .src program names per robot
-     * @param array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string}>} $messageLogs the Jet/Access message-log databases found in the archive, as raw base64 bytes — actually reading their tables happens client-side (see KukaArchive\MessageLogProcessor and Ui\ToolsPages::renderMessageLogs())
+     * @param array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string,format:string}>} $messageLogs the message-log files found in the archive (Jet/Access databases, `format` "jet"; classic Windows Event Log files, `format` "evt"), as raw base64 bytes — actually reading them happens client-side (see KukaArchive\MessageLogProcessor and Ui\ToolsPages::renderMessageLogs())
      */
     public function __construct(
         public readonly string $sourceFileName,
