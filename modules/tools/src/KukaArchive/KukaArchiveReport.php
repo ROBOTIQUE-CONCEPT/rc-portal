@@ -41,7 +41,7 @@ final class KukaArchiveReport
      * @param array<int,array{task:?string,errorCode:?string,mode:?string,robotModel:?string,serialNumber:?string,count:int,firstDate:?\DateTimeImmutable,lastDate:?\DateTimeImmutable}> $fatalErrors grouped tt.log entries
      * @param array<int,array{fileName:string,timestamp:?\DateTimeImmutable}> $debugDumps
      * @param array<int,array{robot:string,programs:array<int,string>}> $programs .src program names per robot
-     * @param array{available:bool,databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,parsed:bool,header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>,error:?string}>} $messageLogs the Jet/Access message-log databases found in the archive; `available` says whether this server could attempt real parsing (mdbtools present) — when false, or when a given database's own `parsed` is false, only name/size/last-modified/`error` are populated for it
+     * @param array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string}>} $messageLogs the Jet/Access message-log databases found in the archive, as raw base64 bytes — actually reading their tables happens client-side (see KukaArchive\MessageLogProcessor and Ui\ToolsPages::renderMessageLogs())
      */
     public function __construct(
         public readonly string $sourceFileName,

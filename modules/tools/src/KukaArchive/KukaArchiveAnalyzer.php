@@ -14,25 +14,27 @@ defined('ABSPATH') || exit;
  * Every extractor here is defensive by design: a missing or malformed file
  * inside the archive yields `null`/`[]` for that section, never an
  * exception — one bad or absent file must never break the rest of the
- * report. Nothing is written to disk beyond a strictly transient temp file
- * (the uploaded archive is never extracted via `ZipArchive::extractTo()`,
- * and any temp file this class creates — for mdbtools, see below — is
- * unlinked before the corresponding method returns).
+ * report. This class never writes anything to disk at all: the uploaded
+ * archive is read via `ZipArchive`'s in-memory API only (`getFromName()`/
+ * `getStream()`, never `extractTo()`).
  *
  * Message-log databases (`KukaLog.mdb` and its `.bkp`/`.tmp` siblings) are
- * genuine Microsoft Jet/Access databases. This class attempts to actually
- * read them via the `mdbtools` command-line utility when it's present on
- * the server (`shell_exec()`/`popen()` enabled, `mdb-export` on PATH) —
- * common on a VPS or dedicated box, absent on most shared hosting — and
- * falls back to reporting name/size/last-modified only when it isn't. This
- * is a runtime feature check, not a build-time assumption, so the same code
- * gets more useful automatically on a host that can support it.
+ * genuine Microsoft Jet/Access databases. This class only detects them and
+ * extracts their raw bytes (base64-encoded, into KukaArchiveReport's
+ * `messageLogs`); actually reading their tables happens client-side, in the
+ * browser, via the `mdb-reader` JS library (see
+ * assets/js-src/kuka-mdb.js and Ui\ToolsPages::renderMessageLogs()) — a
+ * pure-JS Jet/Access reader with no server-side dependency. An earlier
+ * version of this class shelled out to the `mdbtools` command-line utility
+ * when present on the server, but that binary is absent on most shared
+ * hosting; reading in the browser works identically everywhere, and every
+ * visitor's own browser does the (lightweight, per-file) parsing work
+ * instead of the server.
  *
- * The internal timestamp KUKA stores for each message-log row
- * (`LogLowDateTime`/`LogHighDateTime`) isn't documented publicly; the
- * conversion used here (see filetimeToDate()) was reverse-engineered by
- * cross-referencing it against this same tool's own independently-parsed
- * tt.log timestamps on a real sample archive — see that method's docblock.
+ * See KukaArchive\MessageLogProcessor for what happens to the raw rows a
+ * browser posts back (including the empirically reverse-engineered
+ * `LogLowDateTime`/`LogHighDateTime` timestamp conversion) and
+ * KukaArchive\MessageLogAjaxHandler for the endpoint that receives them.
  */
 final class KukaArchiveAnalyzer
 {
@@ -44,26 +46,6 @@ final class KukaArchiveAnalyzer
 
     /** Extensions worth header-sniffing for a Jet/Access signature (message-log databases). */
     private const JET_CANDIDATE_EXTENSIONS = ['mdb', 'bkp', 'tmp'];
-
-    /**
-     * Message-log tables read when mdbtools is available. The `...Param`
-     * companion tables (structured parameters for message-template
-     * substitution) and `Version` are deliberately not read: without KUKA's
-     * own message-template dictionary they can't be turned into readable
-     * text, so this class exposes the raw log rows (code, source, class,
-     * level) instead of attempting a partial, potentially misleading
-     * substitution.
-     */
-    private const LOG_TABLES = [
-        'LogBootE', 'LogBootW', 'LogBootI',
-        'LogInstallationE', 'LogInstallationW', 'LogInstallationI',
-        'LogProcessE', 'LogProcessW', 'LogProcessI',
-        'LogSystemE', 'LogSystemW', 'LogSystemI',
-        'LogUserActionE', 'LogUserActionW', 'LogUserActionI',
-        'LogNotClassified',
-    ];
-
-    private static ?bool $mdbToolsAvailableCache = null;
 
     public static function analyze(string $zipPath, string $originalFileName, int $sourceSize): KukaArchiveReport
     {
@@ -154,7 +136,7 @@ final class KukaArchiveAnalyzer
             fatalErrors: [],
             debugDumps: [],
             programs: [],
-            messageLogs: ['available' => false, 'databases' => []]
+            messageLogs: ['databases' => []]
         );
     }
 
@@ -871,63 +853,48 @@ final class KukaArchiveAnalyzer
     // -- Message-log databases (Jet/Access) -------------------------------
 
     /**
-     * Detects the Jet/Access message-log databases by sniffing each
-     * candidate entry's own header for the format's real signature
-     * (`Standard Jet`/`Standard ACE` at byte offset 4) rather than trusting
-     * the file extension alone, then either parses each one with mdbtools
-     * (when available on this server) or reports name/size/last-modified
-     * only.
+     * Detects Jet/Access message-log databases in the archive and extracts
+     * their raw bytes, base64-encoded, for the browser to read directly
+     * (see this class's docblock). Nothing here parses the database format
+     * itself — that never happens server-side.
      *
-     * @param array<int,string> $entries
-     * @return array{available:bool,databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,parsed:bool,header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>,error:?string}>}
+     * @return array{databases:array<int,array{fileName:string,size:int,lastModified:?\DateTimeImmutable,dataBase64:string}>}
      */
     private static function parseMessageLogs(\ZipArchive $zip, array $entries): array
     {
-        $candidates = [];
+        $databases = [];
+
         foreach ($entries as $entry) {
             $extension = strtolower((string) pathinfo($entry, PATHINFO_EXTENSION));
             if (! in_array($extension, self::JET_CANDIDATE_EXTENSIONS, true)) {
                 continue;
             }
-            if (self::looksLikeJetDatabase($zip, $entry)) {
-                $candidates[] = $entry;
+            if (! self::looksLikeJetDatabase($zip, $entry)) {
+                continue;
             }
-        }
 
-        if ($candidates === []) {
-            return ['available' => false, 'databases' => []];
-        }
+            $bytes = $zip->getFromName($entry);
+            if ($bytes === false) {
+                continue;
+            }
 
-        $mdbToolsAvailable = self::mdbToolsAvailable();
-        $databases = [];
-
-        foreach ($candidates as $entry) {
             $stat = $zip->statName($entry);
             $lastModified = null;
             if ($stat !== false && isset($stat['mtime']) && $stat['mtime'] > 0) {
                 $lastModified = (new \DateTimeImmutable())->setTimestamp((int) $stat['mtime']);
             }
 
-            $database = [
+            $databases[] = [
                 'fileName' => basename($entry),
-                'size' => $stat !== false ? (int) $stat['size'] : 0,
+                'size' => $stat !== false ? (int) $stat['size'] : strlen($bytes),
                 'lastModified' => $lastModified,
-                'parsed' => false,
-                'header' => null,
-                'entries' => [],
-                'error' => null,
+                'dataBase64' => base64_encode($bytes),
             ];
-
-            if ($mdbToolsAvailable) {
-                $database = self::parseJetDatabase($zip, $entry, $database);
-            }
-
-            $databases[] = $database;
         }
 
         usort($databases, static fn (array $a, array $b): int => strcasecmp($a['fileName'], $b['fileName']));
 
-        return ['available' => $mdbToolsAvailable, 'databases' => $databases];
+        return ['databases' => $databases];
     }
 
     private static function looksLikeJetDatabase(\ZipArchive $zip, string $entry): bool
@@ -947,206 +914,6 @@ final class KukaArchiveAnalyzer
         $signature = substr($header, 4, 15);
 
         return str_starts_with($signature, 'Standard Jet') || str_starts_with($signature, 'Standard ACE');
-    }
-
-    /**
-     * @param array{fileName:string,size:int,lastModified:?\DateTimeImmutable,parsed:bool,header:?array<string,string>,entries:array<int,mixed>,error:?string} $database
-     * @return array{fileName:string,size:int,lastModified:?\DateTimeImmutable,parsed:bool,header:?array<string,string>,entries:array<int,mixed>,error:?string}
-     */
-    private static function parseJetDatabase(\ZipArchive $zip, string $entry, array $database): array
-    {
-        $bytes = $zip->getFromName($entry);
-        if ($bytes === false) {
-            $database['error'] = __('Lecture impossible dans l’archive.', 'rc-portal');
-            return $database;
-        }
-
-        $tmpPath = rtrim(sys_get_temp_dir(), '/') . '/rc-tools-kuka-' . bin2hex(random_bytes(8)) . '.mdb';
-        if (@file_put_contents($tmpPath, $bytes) === false) {
-            $database['error'] = __('Écriture temporaire impossible.', 'rc-portal');
-            return $database;
-        }
-        @chmod($tmpPath, 0600);
-
-        try {
-            $availableTables = self::listMdbTables($tmpPath);
-            if ($availableTables === null) {
-                $database['error'] = __('La base n’a pas pu être ouverte par mdbtools (fichier corrompu ou format non reconnu).', 'rc-portal');
-                return $database;
-            }
-
-            if (in_array('LogHeader', $availableTables, true)) {
-                $database['header'] = self::exportMdbHeader($tmpPath);
-            }
-
-            $entriesOut = [];
-            foreach (self::LOG_TABLES as $table) {
-                if (! in_array($table, $availableTables, true)) {
-                    continue;
-                }
-                foreach (self::exportMdbLogTable($tmpPath, $table) as $row) {
-                    $entriesOut[] = $row;
-                }
-            }
-
-            usort($entriesOut, static fn (array $a, array $b): int => ($a['date']?->getTimestamp() ?? 0) <=> ($b['date']?->getTimestamp() ?? 0));
-
-            $database['entries'] = $entriesOut;
-            $database['parsed'] = true;
-        } finally {
-            @unlink($tmpPath);
-        }
-
-        return $database;
-    }
-
-    private static function mdbToolsAvailable(): bool
-    {
-        if (self::$mdbToolsAvailableCache !== null) {
-            return self::$mdbToolsAvailableCache;
-        }
-
-        if (! function_exists('shell_exec') || ! function_exists('popen')) {
-            return self::$mdbToolsAvailableCache = false;
-        }
-
-        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
-        if (in_array('shell_exec', $disabled, true) || in_array('popen', $disabled, true)) {
-            return self::$mdbToolsAvailableCache = false;
-        }
-
-        $which = @shell_exec('command -v mdb-export 2>/dev/null');
-
-        return self::$mdbToolsAvailableCache = is_string($which) && trim($which) !== '';
-    }
-
-    /** @return array<int,string>|null */
-    private static function listMdbTables(string $path): ?array
-    {
-        $output = @shell_exec('mdb-tables -1 ' . escapeshellarg($path) . ' 2>/dev/null');
-        if (! is_string($output) || trim($output) === '') {
-            return null;
-        }
-
-        return array_values(array_filter(array_map('trim', explode("\n", $output)), static fn (string $t): bool => $t !== ''));
-    }
-
-    /** @return array<int,array<string,string>> */
-    private static function exportMdbCsv(string $path, string $table): array
-    {
-        $handle = @popen('mdb-export ' . escapeshellarg($path) . ' ' . escapeshellarg($table) . ' 2>/dev/null', 'r');
-        if ($handle === false) {
-            return [];
-        }
-
-        $rows = [];
-        $header = fgetcsv($handle);
-        if ($header !== false) {
-            while (($row = fgetcsv($handle)) !== false) {
-                if (count($row) !== count($header)) {
-                    continue;
-                }
-                $rows[] = array_combine($header, $row);
-            }
-        }
-        pclose($handle);
-
-        return $rows;
-    }
-
-    /** @return array<string,string> */
-    private static function exportMdbHeader(string $path): array
-    {
-        $header = [];
-        foreach (self::exportMdbCsv($path, 'LogHeader') as $row) {
-            if (isset($row['Name'])) {
-                $header[$row['Name']] = self::normalizeEncoding($row['Value'] ?? '');
-            }
-        }
-
-        return $header;
-    }
-
-    /** @return array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}> */
-    private static function exportMdbLogTable(string $path, string $table): array
-    {
-        $out = [];
-        foreach (self::exportMdbCsv($path, $table) as $row) {
-            $source = self::normalizeEncoding($row['LogSource'] ?? '');
-            // Some `.tmp`/mid-write working-copy databases yield structurally
-            // valid rows whose actual field bytes are corrupted (seen as a
-            // run of the same non-alphanumeric character, e.g.
-            // "################"); skip those rather than show garbage.
-            if ($source !== '' && preg_match('/[A-Za-z0-9]/', $source) !== 1) {
-                continue;
-            }
-
-            $out[] = [
-                'category' => $table,
-                'date' => self::filetimeToDate($row['LogLowDateTime'] ?? null, $row['LogHighDateTime'] ?? null),
-                'source' => $source ?: null,
-                'instance' => self::normalizeEncoding($row['LogInstance'] ?? '') ?: null,
-                'messageCode' => $row['LogMessage'] ?? null,
-                'level' => $row['LogLevel'] ?? null,
-                'module' => self::normalizeEncoding($row['LogDBModul'] ?? '') ?: null,
-                'key' => $row['LogDBKey'] ?? null,
-                'class' => $row['LogClass'] ?? null,
-                'type' => $row['LogType'] ?? null,
-            ];
-        }
-
-        return $out;
-    }
-
-    /**
-     * Converts KUKA's split 64-bit internal timestamp (`LogLowDateTime` +
-     * `LogHighDateTime`, as exported by mdb-export from the message-log
-     * databases) to a calendar date/time.
-     *
-     * This isn't documented by KUKA. It was empirically reverse-engineered
-     * against a real sample archive: reading the combined 64-bit value
-     * (`high * 2^32 + low`, both taken as unsigned) as a Windows FILETIME
-     * (100ns ticks since 1601-01-01) lands 400+ years in the future — but
-     * at exactly DOUBLE that tick rate (i.e. dividing by 2×10,000,000
-     * instead of 10,000,000), the same archive's `LogSystemE` table's
-     * oldest entry comes out to 2025-10-27 12:12:59, within 34 minutes of a
-     * fatal error this same tool independently parses from that archive's
-     * plain-text `tt.log` at 27.10.25 12:46:51 — and the newest entries
-     * across `LogSystemE/W/I` land within a few hours of the archive's own
-     * backup timestamp (am.ini `Date=`). Sorting a table by `LogID` also
-     * makes this value strictly increasing, confirming it's a real
-     * monotonic clock reading and not noise. Given that convergence across
-     * three independent references, "double-rate FILETIME" is treated as
-     * confirmed for this log format — but never throws, and rejects
-     * anything outside a plausible 2000-2100 window rather than surface an
-     * implausible date if a future archive's encoding differs.
-     */
-    private static function filetimeToDate(?string $low, ?string $high): ?\DateTimeImmutable
-    {
-        if ($low === null || $high === null || $low === '' || $high === '') {
-            return null;
-        }
-
-        $lowInt = (int) $low;
-        $highInt = (int) $high;
-        $lowUnsigned = $lowInt < 0 ? $lowInt + 4294967296 : $lowInt;
-        $highUnsigned = $highInt < 0 ? $highInt + 4294967296 : $highInt;
-        $combined = $highUnsigned * 4294967296 + $lowUnsigned;
-
-        if ($combined <= 0) {
-            return null;
-        }
-
-        $unixSeconds = intdiv($combined, 20000000) - 11644473600;
-
-        // Plausibility guard (2000-01-01 .. 2100-01-01): reject rather than
-        // show a clearly-wrong date if the encoding doesn't hold for a given
-        // archive.
-        if ($unixSeconds < 946684800 || $unixSeconds > 4102444800) {
-            return null;
-        }
-
-        return (new \DateTimeImmutable())->setTimestamp($unixSeconds);
     }
 
     // -- Zip / text helpers ----------------------------------------------
@@ -1210,9 +977,12 @@ final class KukaArchiveAnalyzer
 
     /**
      * KUKA text files (KRC1/KRC2-era, European industrial equipment) are
-     * commonly Windows-1252/ISO-8859-1 rather than UTF-8.
+     * commonly Windows-1252/ISO-8859-1 rather than UTF-8. Public: also used
+     * by MessageLogProcessor on strings a browser's `mdb-reader` already
+     * decoded — normally already valid UTF-8, in which case this is a no-op
+     * (see the early return below), kept for defense in depth.
      */
-    private static function normalizeEncoding(string $text): string
+    public static function normalizeEncoding(string $text): string
     {
         if ($text === '' || mb_check_encoding($text, 'UTF-8')) {
             return $text;

@@ -6,6 +6,8 @@ namespace RC\Portal\Modules\Tools\Ui;
 
 use RC\Portal\Modules\Tools\KukaArchive\KukaArchiveAnalyzer;
 use RC\Portal\Modules\Tools\KukaArchive\KukaArchiveReport;
+use RC\Portal\Modules\Tools\KukaArchive\MessageLogAjaxHandler;
+use RC\Portal\Modules\Tools\KukaArchive\MessageLogProcessor;
 
 defined('ABSPATH') || exit;
 
@@ -74,6 +76,10 @@ final class ToolsPages
             }
         }
 
+        if ($report !== null && $report->messageLogs['databases'] !== []) {
+            $this->enqueueKukaMdbAssets();
+        }
+
         ob_start();
         ?>
         <div class="rc-tools-kuka-archive">
@@ -81,7 +87,7 @@ final class ToolsPages
                 <div>
                     <span class="rc-eyebrow"><?php esc_html_e('Outils internes', 'rc-portal'); ?></span>
                     <h1><?php esc_html_e("Analyseur d'archive KUKA", 'rc-portal'); ?></h1>
-                    <p><?php esc_html_e('Charge une archive de sauvegarde KUKA Archive Manager (.zip) pour en extraire les informations utiles au diagnostic. Rien n’est conservé au-delà de cette analyse : le fichier est traité en mémoire (et via un fichier temporaire strictement transitoire pour les journaux de messages) puis supprimé à la fin de la requête.', 'rc-portal'); ?></p>
+                    <p><?php esc_html_e('Charge une archive de sauvegarde KUKA Archive Manager (.zip) pour en extraire les informations utiles au diagnostic. Rien n’est conservé au-delà de cette analyse : le fichier est traité en mémoire puis supprimé à la fin de la requête ; les journaux de messages, eux, sont lus directement dans votre navigateur.', 'rc-portal'); ?></p>
                 </div>
                 <?php if ($report !== null) : ?>
                     <div>
@@ -180,6 +186,22 @@ final class ToolsPages
     private static function maxUploadBytes(): int
     {
         return min(self::MAX_UPLOAD_BYTES, wp_max_upload_size());
+    }
+
+    /**
+     * Loads the bundled `mdb-reader` JS library (see
+     * assets/js-src/kuka-mdb.js) — only on this page, and only when the
+     * archive actually contains a message-log database for it to read.
+     */
+    private function enqueueKukaMdbAssets(): void
+    {
+        wp_enqueue_script(
+            'rc-tools-kuka-mdb',
+            plugins_url('modules/tools/assets/js/kuka-mdb.bundle.js', RC_PORTAL_FILE),
+            [],
+            RC_PORTAL_VERSION,
+            true
+        );
     }
 
     private function renderKukaReport(KukaArchiveReport $report): string
@@ -786,6 +808,17 @@ final class ToolsPages
         return (string) ob_get_clean();
     }
 
+    /**
+     * Renders one placeholder card per detected message-log database — the
+     * bundled `mdb-reader` JS (assets/js-src/kuka-mdb.js, enqueued by
+     * enqueueKukaMdbAssets()) reads each one's embedded base64 bytes
+     * directly in the browser, posts the raw rows to MessageLogAjaxHandler,
+     * and replaces this placeholder's `.rc-kuka-mdb__body` with the
+     * returned HTML (renderMessageLogDatabaseCard()). See this tool's
+     * "no persistence" note in ToolsModule's docblock: the base64 blob
+     * below only ever exists in this response and the browser's own page
+     * memory, never written to disk again on either side.
+     */
     private function renderMessageLogs(KukaArchiveReport $report): string
     {
         $messageLogs = $report->messageLogs;
@@ -793,16 +826,18 @@ final class ToolsPages
             return '';
         }
 
+        $config = [
+            'ajaxUrl' => admin_url('admin-ajax.php?action=' . MessageLogAjaxHandler::ACTION),
+            'nonce' => wp_create_nonce(MessageLogAjaxHandler::NONCE_ACTION),
+            'logTables' => MessageLogProcessor::LOG_TABLES,
+        ];
+
         ob_start();
         ?>
-        <div class="rc-card">
-            <div class="rc-card__header"><h3><?php esc_html_e('Journaux de messages', 'rc-portal'); ?></h3></div>
+        <script type="application/json" id="rc-tools-kuka-mdb-config"><?php echo wp_json_encode($config); ?></script>
 
-            <?php if (! $messageLogs['available']) : ?>
-                <p class="rc-field--help"><?php esc_html_e('Ces fichiers sont des bases de données Microsoft Access/Jet utilisées par KUKA pour l’historique détaillé des messages système. Ce serveur ne dispose pas du composant nécessaire pour les lire (mdbtools) — souvent absent d’un hébergement web mutualisé — cette analyse se limite donc à les repérer et à en lister les propriétés. Sur un serveur qui dispose de ce composant, la même analyse en lit aussi le contenu.', 'rc-portal'); ?></p>
-            <?php endif; ?>
-
-            <?php foreach ($messageLogs['databases'] as $database) : ?>
+        <?php foreach ($messageLogs['databases'] as $database) : ?>
+            <div class="rc-card" data-rc-kuka-mdb>
                 <div class="rc-card__header">
                     <h3>
                         <?php echo esc_html($database['fileName']); ?>
@@ -810,76 +845,101 @@ final class ToolsPages
                         <?php echo esc_html($this->formatDateTime($database['lastModified'])); ?>)
                     </h3>
                 </div>
+                <div class="rc-kuka-mdb__body">
+                    <p class="rc-field--help"><?php esc_html_e('Analyse en cours dans le navigateur…', 'rc-portal'); ?></p>
+                </div>
+                <script
+                    type="text/plain"
+                    class="rc-kuka-mdb__data"
+                    data-filename="<?php echo esc_attr($database['fileName']); ?>"
+                    data-size="<?php echo esc_attr((string) $database['size']); ?>"
+                    data-lastmodified="<?php echo esc_attr($database['lastModified'] !== null ? (string) $database['lastModified']->getTimestamp() : '0'); ?>"
+                ><?php echo esc_html($database['dataBase64']); ?></script>
+            </div>
+        <?php endforeach; ?>
+        <?php
+        return (string) ob_get_clean();
+    }
 
-                <?php if ($database['error'] !== null) : ?>
-                    <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($database['error']); ?></div>
-                <?php elseif (! $database['parsed']) : ?>
-                    <p class="rc-field--help"><?php esc_html_e('Détectée mais non analysée (voir note ci-dessus).', 'rc-portal'); ?></p>
-                <?php elseif ($database['entries'] === []) : ?>
-                    <p class="rc-field--help"><?php esc_html_e('Aucun message dans les tables de journal connues de ce fichier.', 'rc-portal'); ?></p>
-                <?php else : ?>
-                    <?php if ($database['header'] !== null) : ?>
-                        <div class="rc-field-grid">
-                            <?php foreach ($database['header'] as $key => $value) : ?>
-                                <?php if (trim($value) === '') continue; ?>
-                                <div class="rc-field">
-                                    <label><?php echo esc_html($key); ?></label>
-                                    <span><?php echo esc_html($value); ?></span>
-                                </div>
-                            <?php endforeach; ?>
+    /**
+     * Renders the body of one message-log database card — the KUKA-provided
+     * `LogHeader` fields plus its message table — from rows a browser
+     * already extracted and MessageLogProcessor already shaped. Public:
+     * called from MessageLogAjaxHandler once a browser posts back the rows
+     * it read client-side (see renderMessageLogs() for the placeholder
+     * whose `.rc-kuka-mdb__body` this replaces).
+     *
+     * @param array{header:?array<string,string>,entries:array<int,array{category:string,date:?\DateTimeImmutable,source:?string,instance:?string,messageCode:?string,level:?string,module:?string,key:?string,class:?string,type:?string}>,error:?string} $database
+     */
+    public function renderMessageLogDatabaseCard(array $database): string
+    {
+        ob_start();
+        ?>
+        <?php if ($database['error'] !== null) : ?>
+            <div class="rc-portal-alert rc-portal-alert--error"><?php echo esc_html($database['error']); ?></div>
+        <?php elseif ($database['entries'] === []) : ?>
+            <p class="rc-field--help"><?php esc_html_e('Aucun message dans les tables de journal connues de ce fichier.', 'rc-portal'); ?></p>
+        <?php else : ?>
+            <?php if ($database['header'] !== null && $database['header'] !== []) : ?>
+                <div class="rc-field-grid">
+                    <?php foreach ($database['header'] as $key => $value) : ?>
+                        <?php if (trim((string) $value) === '') continue; ?>
+                        <div class="rc-field">
+                            <label><?php echo esc_html($key); ?></label>
+                            <span><?php echo esc_html($value); ?></span>
                         </div>
-                    <?php endif; ?>
-                    <?php
-                    $totalEntries = count($database['entries']);
-                    $displayEntries = $database['entries'];
-                    usort($displayEntries, static fn (array $a, array $b): int => ($b['date']?->getTimestamp() ?? 0) <=> ($a['date']?->getTimestamp() ?? 0));
-                    $displayEntries = array_slice($displayEntries, 0, self::MAX_LOG_ROWS_DISPLAYED);
-                    ?>
-                    <p class="rc-field--help">
-                        <?php if ($totalEntries > self::MAX_LOG_ROWS_DISPLAYED) : ?>
-                            <?php echo esc_html(sprintf(
-                                /* translators: 1: number of rows shown, 2: total number of rows found */
-                                __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
-                                count($displayEntries),
-                                $totalEntries
-                            )); ?>
-                        <?php else : ?>
-                            <?php echo esc_html(sprintf(
-                                /* translators: %d: number of message-log rows found */
-                                __('%d messages, du plus récent au plus ancien (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
-                                $totalEntries
-                            )); ?>
-                        <?php endif; ?>
-                    </p>
-                    <div class="rc-table-wrap">
-                        <table class="rc-table">
-                            <thead>
-                            <tr>
-                                <th><?php esc_html_e('Date', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Catégorie', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Niveau', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Source', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Code', 'rc-portal'); ?></th>
-                                <th><?php esc_html_e('Clé', 'rc-portal'); ?></th>
-                            </tr>
-                            </thead>
-                            <tbody>
-                            <?php foreach ($displayEntries as $entry) : ?>
-                                <tr>
-                                    <td><?php echo esc_html($this->formatDateTime($entry['date'])); ?></td>
-                                    <td><?php echo esc_html($entry['category']); ?></td>
-                                    <td><?php echo esc_html($entry['level'] ?? '—'); ?></td>
-                                    <td><?php echo esc_html($entry['source'] ?? '—'); ?></td>
-                                    <td><?php echo esc_html($entry['messageCode'] ?? '—'); ?></td>
-                                    <td><?php echo esc_html($entry['key'] ?? '—'); ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+            <?php
+            $totalEntries = count($database['entries']);
+            $displayEntries = $database['entries'];
+            usort($displayEntries, static fn (array $a, array $b): int => ($b['date']?->getTimestamp() ?? 0) <=> ($a['date']?->getTimestamp() ?? 0));
+            $displayEntries = array_slice($displayEntries, 0, self::MAX_LOG_ROWS_DISPLAYED);
+            ?>
+            <p class="rc-field--help">
+                <?php if ($totalEntries > self::MAX_LOG_ROWS_DISPLAYED) : ?>
+                    <?php echo esc_html(sprintf(
+                        /* translators: 1: number of rows shown, 2: total number of rows found */
+                        __('%1$d messages les plus récents affichés sur %2$d au total (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                        count($displayEntries),
+                        $totalEntries
+                    )); ?>
+                <?php else : ?>
+                    <?php echo esc_html(sprintf(
+                        /* translators: %d: number of message-log rows found */
+                        __('%d messages, du plus récent au plus ancien (code = référence interne KUKA, sans dictionnaire de traduction embarqué dans cette version).', 'rc-portal'),
+                        $totalEntries
+                    )); ?>
                 <?php endif; ?>
-            <?php endforeach; ?>
-        </div>
+            </p>
+            <div class="rc-table-wrap">
+                <table class="rc-table">
+                    <thead>
+                    <tr>
+                        <th><?php esc_html_e('Date', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Catégorie', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Niveau', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Source', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Code', 'rc-portal'); ?></th>
+                        <th><?php esc_html_e('Clé', 'rc-portal'); ?></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($displayEntries as $entry) : ?>
+                        <tr>
+                            <td><?php echo esc_html($this->formatDateTime($entry['date'])); ?></td>
+                            <td><?php echo esc_html($entry['category']); ?></td>
+                            <td><?php echo esc_html($entry['level'] ?? '—'); ?></td>
+                            <td><?php echo esc_html($entry['source'] ?? '—'); ?></td>
+                            <td><?php echo esc_html($entry['messageCode'] ?? '—'); ?></td>
+                            <td><?php echo esc_html($entry['key'] ?? '—'); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
         <?php
         return (string) ob_get_clean();
     }

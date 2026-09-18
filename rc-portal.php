@@ -2,7 +2,7 @@
 /**
  * Plugin Name: RC Portal
  * Description: Robotique Concept business runtime and embedded business module host for the my site.
- * Version: 0.3.0-alpha13
+ * Version: 0.3.0-alpha14
  * Requires at least: 6.8
  * Requires PHP: 8.1
  * Author: Robotique Concept
@@ -16,7 +16,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('RC_PORTAL_VERSION', '0.3.0-alpha13');
+define('RC_PORTAL_VERSION', '0.3.0-alpha14');
 define('RC_PORTAL_MIN_CORE_VERSION', '0.6.0-alpha10');
 define('RC_PORTAL_UI_API_VERSION', 1);
 define('RC_PORTAL_FILE', __FILE__);

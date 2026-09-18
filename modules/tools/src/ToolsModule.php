@@ -6,6 +6,7 @@ namespace RC\Portal\Modules\Tools;
 
 use RC\Portal\Module\EmbeddedModuleInterface;
 use RC\Portal\Module\ModuleDescriptor;
+use RC\Portal\Modules\Tools\KukaArchive\MessageLogAjaxHandler;
 use RC\Portal\Modules\Tools\Ui\ToolsPages;
 
 /**
@@ -69,8 +70,11 @@ final class ToolsModule implements EmbeddedModuleInterface
 
     public function boot(): void
     {
-        // No cross-module contracts to publish: this module is intentionally
-        // self-contained (see class docblock).
+        // No cross-module contracts to publish (this module is intentionally
+        // self-contained, see class docblock) — but the KUKA archive
+        // analyzer's message-log tab does need one small AJAX endpoint: see
+        // KukaArchive\MessageLogAjaxHandler's own docblock for why.
+        MessageLogAjaxHandler::register();
     }
 
     private function pages(): ToolsPages
