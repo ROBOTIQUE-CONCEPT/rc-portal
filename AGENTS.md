@@ -233,4 +233,4 @@ coordinated two-repo change, not a Portal-only one.
 | Anything Core-contract-shaped | `rc-core/AGENTS.md` and `rc-core/docs/MODULE-DEVELOPMENT.md` |
 | Deployment / WP Pusher | `docs/DEPLOYMENT.md` (mechanics still accurate; version numbers in it are not) |
 | Presentation ownership | Decided (2026-09-19, no exception) — `rc-core/docs/PORTAL-UI.md`'s implementation-status note and this file's Architecture boundaries section above, not the open-questions doc |
-| Module lifecycle / registration mechanism itself | `rc-core/docs/ARCHITECTURE-OPEN-QUESTIONS.md` #1 — genuinely unresolved |
+| Module lifecycle / registration mechanism itself | Decided (2026-09-19) — `EmbeddedModuleInterface` is canonical; `rc-core`'s own `ModuleInterface`/`ModuleRegistry` mechanism was removed as dead code (zero callers). See `rc-core/docs/MODULE-DEVELOPMENT.md` |
