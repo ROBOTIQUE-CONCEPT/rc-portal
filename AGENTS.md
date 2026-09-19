@@ -25,29 +25,35 @@ coordinated two-repo change, not a Portal-only one.
   through the module lifecycle contract (`EmbeddedModuleInterface`) — the
   runtime doesn't need to know a given module's internal classes to boot,
   register capabilities for, or route to it.
-- Embedded modules (under `modules/`) may depend on RC Core's contracts
-  *and* on RC Portal's own public HTTP/routing/module surface
-  (`RC\Portal\Http\*`, `RC\Portal\Module\*`) for declarative presentation —
-  see `modules/AGENTS.md` for the module-side rules in full. RC Portal
-  itself never depends on any individual module.
+- Embedded modules (under `modules/`) may depend on RC Core's contracts for
+  everything, including presentation: a module supplies semantic
+  page/table/form data (`rc-core/docs/PORTAL-UI.md`'s
+  `PageDefinition`/`TableDefinition`) into RC Core's UI Registry — it does
+  not need, and (see below) should not lean on, a Portal-specific rendering
+  surface to do this. A module may still call RC Portal's own runtime/
+  routing surface (`RC\Portal\Module\*`) for the parts of the lifecycle
+  contract that are genuinely Portal's (registration, routing, capability
+  wiring) — see `modules/AGENTS.md` for the module-side rules in full. RC
+  Portal itself never depends on any individual module.
 - **Namespace**: `RC\Portal\*` for the runtime, `RC\Portal\Modules\{Module}\*`
   per embedded module. Note this is a *different* root prefix than RC
   Core's `WPRC\Core\*` — a known, unresolved inconsistency across the two
-  repos (see `rc-core/docs/ARCHITECTURE-OPEN-QUESTIONS.md` #1). Don't
-  "fix" it unilaterally inside a Portal-only change.
-- Presentation ownership is split, not absolute: RC Portal Theme owns
-  layout/chrome/design system/site-wide CSS/JS; a module that registers a
-  UI Registry page supplies that page's own content HTML through its
-  `renderer` callback (`RouteContext::$pageHtml`), which the theme renders
-  verbatim. This is a working, intentional mechanism (`products` and
-  `tools` both use it extensively) — don't read "the theme owns
-  presentation" as "a module must never build HTML." See
-  `rc-core/docs/ARCHITECTURE-OPEN-QUESTIONS.md` #2 for the open question
-  about whether this stays the permanent model. Separately, a module *may*
-  ship and enqueue its own page-specific JS/CSS for its own pages only
-  (e.g. `modules/tools/assets/js/message-logs.bundle.js`) — that's a normal
-  implementation detail of that module's UI, not a violation of the
-  theme's ownership of *site-wide* front-end assets.
+  repos, not itself covered by either 2026-09-19 decision. Don't "fix" it
+  unilaterally inside a Portal-only change.
+- **Presentation ownership (decided 2026-09-19, no exception):** a module
+  never builds HTML. It supplies semantic data to RC Core's `PageDefinition`/
+  `TableDefinition` contract (`rc-core/docs/PORTAL-UI.md`); RC Portal (or
+  the theme, through Portal) is the only place markup gets produced. This is
+  **not yet implemented**: `products` and `tools` both currently supply a
+  page's content as a pre-built HTML string through a `renderer` callback
+  (`RouteContext::$pageHtml`), which the theme renders verbatim. Treat that
+  as migration debt to fix, not a working pattern to extend — a new module
+  page should not add another hand-built HTML renderer if it can be
+  avoided. Separately, a module *may* still ship and enqueue its own
+  page-specific JS/CSS for its own pages only (e.g.
+  `modules/tools/assets/js/message-logs.bundle.js`) — that's a normal
+  implementation detail of that module's UI, not the same thing as building
+  its page's HTML, and isn't affected by this decision.
 
 ## Repository map
 
@@ -81,11 +87,12 @@ coordinated two-repo change, not a Portal-only one.
   per-module rules and the current implementation-state map.
 - `tools/preflight.php` — see Validation.
 - `uninstall.php` — cleanup on plugin deletion.
-- `docs/ARCHITECTURE.md` — Portal's own architecture doc. **Stale**: it
-  still frames Portal as four foundation-only modules and does not mention
-  the `tools` module at all. Don't rely on it for current module state —
-  use `modules/AGENTS.md`'s module map instead, which is derived from the
-  actual code and CHANGELOG.
+- `docs/ARCHITECTURE.md` — Portal's own architecture doc; lists `tools`
+  alongside the other four modules and carries the decided (2026-09-19, no
+  exception) presentation rule in its "Presentation rule" section. It still
+  doesn't reflect real per-module *implementation* state (foundation-only
+  vs. built) — for that, use `modules/AGENTS.md`'s module map instead, which
+  is derived from the actual code and CHANGELOG.
 - `docs/DEPLOYMENT.md` — deployment/WP Pusher steps. Also version-stale
   (still headed `0.3.0-alpha2`) and has a minor internal inconsistency
   (omits `/leads/` from one step's list while including it in another) —
@@ -225,4 +232,5 @@ coordinated two-repo change, not a Portal-only one.
 | ERP-backed data (`products`) | `rc-core/AGENTS.md`'s ERP section, then `modules/products` itself |
 | Anything Core-contract-shaped | `rc-core/AGENTS.md` and `rc-core/docs/MODULE-DEVELOPMENT.md` |
 | Deployment / WP Pusher | `docs/DEPLOYMENT.md` (mechanics still accurate; version numbers in it are not) |
-| Presentation ownership questions | `rc-core/docs/ARCHITECTURE-OPEN-QUESTIONS.md` #2 |
+| Presentation ownership | Decided (2026-09-19, no exception) — `rc-core/docs/PORTAL-UI.md`'s implementation-status note and this file's Architecture boundaries section above, not the open-questions doc |
+| Module lifecycle / registration mechanism itself | `rc-core/docs/ARCHITECTURE-OPEN-QUESTIONS.md` #1 — genuinely unresolved |

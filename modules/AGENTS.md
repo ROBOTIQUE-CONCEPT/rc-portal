@@ -35,6 +35,18 @@ discovery, routing, and the shared lifecycle contract.
   RC\Portal\Modules\...` statement in the repo references only the
   importing file's own module) and is mechanically checked by
   `rc-portal/tools/preflight.php`'s cross-module-import regex.
+- **Presentation (decided 2026-09-19, no exception):** a module never
+  builds HTML for its pages. The target contract is RC Core's declarative
+  `PageDefinition`/`TableDefinition` data (`rc-core/docs/PORTAL-UI.md`) —
+  register that data with the UI Registry and let Portal/the theme render
+  it. This is **not yet implemented**: `products` and `tools` both
+  currently return a pre-built HTML string from their page's `renderer`
+  callback (`RouteContext::$pageHtml`), which the theme outputs verbatim.
+  Do not copy that shape for a new module page — it's migration debt being
+  carried forward, not the pattern to follow. A module may still register
+  and enqueue its own page-specific JS/CSS for its own pages (e.g.
+  `modules/tools/assets/js/message-logs.bundle.js`); that's unaffected by
+  this rule.
 - Cross-domain reads go through an RC Core contract. The working example
   in this codebase: `products` publishes
   `ProductCatalogProviderInterface` into RC Core's `ServiceRegistry`
@@ -185,3 +197,4 @@ registration shell to build on.
 | ERP access from a module | `rc-core/AGENTS.md`'s ERP section, then `products`'s `ProductRepository`/`ProductsCatalogAdapter` as the only working example |
 | Cross-module notification | This file's note on the (currently unimplemented) "event bus" rule in `modules/README.md` |
 | File uploads / user-provided files | `modules/tools`'s existing no-persistence pattern before assuming a different one is fine |
+| A module's page/UI content | `rc-core/docs/PORTAL-UI.md` — the decided, no-exception target (`PageDefinition`/`TableDefinition`); don't copy `products`/`tools`'s current hand-built-HTML `renderer` shape into new work |
