@@ -12,7 +12,8 @@ WordPress Multisite (current infrastructure)
              │    ├── Maintenance
              │    ├── Products
              │    ├── Inventory
-             │    └── Leads
+             │    ├── Leads
+             │    └── Tools
              │
              └── RC Portal Theme
                   └── all frontend presentation/UI
@@ -39,6 +40,16 @@ This keeps the business runtime usable if the frontend is replaced in the future
 Embedded modules are source-code boundaries, not independent WordPress plugins. They may depend on Portal runtime primitives and RC Core public contracts, but **never on another embedded business module**.
 
 ## Presentation rule
+
+> **Decided 2026-09-19, no exception:** a module never builds HTML. It
+> supplies semantic page/table/form data (see RC Core's
+> `docs/PORTAL-UI.md` — `PageDefinition`/`TableDefinition`); RC Portal (or
+> the theme, through Portal) is the only place markup is produced. This is
+> not yet implemented: `products` and `tools` currently build HTML
+> directly in their own `Ui/*Pages.php` classes. Treat that as migration
+> debt to fix, not a pattern to extend in new module work — a new module
+> page should not add another hand-built HTML renderer if it can be
+> avoided.
 
 Business/domain/application logic must not be implemented in the theme.
 The theme may:

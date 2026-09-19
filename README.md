@@ -33,14 +33,20 @@ RC Portal does **not** own:
 
 ## Embedded modules
 
-This foundation release declares four isolated business bounded contexts:
+This foundation release declared four isolated business bounded contexts,
+since joined by a fifth (`tools`):
 
 - `maintenance`: assets, customer equipment, contracts, preventive plans and interventions;
 - `products`: ERP products + RC enrichment + publication orchestration;
 - `inventory`: RC-specific serialized stock and consignment;
-- `leads`: inquiries received from `www` and ERP linkage.
+- `leads`: inquiries received from `www` and ERP linkage;
+- `tools`: internal technical utilities (e.g. the KUKA archive analyzer), unrelated to ERP/business data.
 
-The release intentionally creates no business tables and performs no migration from legacy plugins.
+`maintenance`, `inventory` and `leads` remain foundation-only placeholders
+(no domain code yet); `products` and `tools` are fully implemented — see
+`modules/AGENTS.md`'s module map for the current, code-derived state of
+each. (The rest of this document's module-count/table description predates
+that — kept as historical framing of the original foundation release.)
 
 ## Public UI boundary
 
